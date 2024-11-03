@@ -14,6 +14,7 @@ enum {
     TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW,
 };
 
+// XXX: unkeywordify 'echo', 'read' and 'quit'
 // XXX: implement pow '**', 'import'
 
 const char *ops[] = {
@@ -24,7 +25,7 @@ const char *ops[] = {
 
 const char *keywords[] = {
     "def", "return", "if", "elif", "else", "while", "break", "next",
-    "echo", "read", "quit", "typeof",
+    "echo", "read", "quit",
 };
 
 typedef struct {
@@ -74,9 +75,10 @@ typedef struct {
     char *file;
     int ip, ret;
     TokenList code;
+    VariableList vars;
     FunctionList funs;
     ForeignList extn;
-    Function global, *fn;
+    Function *fn;
 } Nero;
 
 Value args_list;
@@ -202,17 +204,8 @@ void tokenize(Nero *nr, char *file) {
         tok = next_token(fp);
         LIST_PUSH(nr->code, tok);
     } while (tok.kind != TK_EOF);
-
     nr->ip = 0;
-    nr->global = (Function) {
-        .name = (String) {.alloc = 0, .sz = 8, .ptr = "<global>"},
-        .vars = (VariableList) LIST_EMPTY(),
-        // .funs = (FunctionList) LIST_EMPTY(),
-        .code = (Block) {.start = 0, .end = nr->code.sz},
-    };
-    nr->fn = &nr->global;
-
-     fclose(fp);
+    fclose(fp);
     return;
 fail:
     if (fp) fclose(fp);
@@ -277,24 +270,6 @@ Value nero_string(Value val) {
         break;
     }
     return (Value) {T_STRING, .free = V_FREE, .as_str = str};
-}
-
-Value nero_typeof(Value val) {
-    Value typ = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
-    switch (val.type) {
-    case T_BOOL:
-        strcatp(&typ.as_str, "bool"); break;
-    case T_NUMBER:
-        strcatp(&typ.as_str, "number"); break;
-    case T_STRING:
-        strcatp(&typ.as_str, "string"); break;
-    case T_LIST:
-        strcatp(&typ.as_str, "list"); break;
-    default:
-        strcatp(&typ.as_str, "nil"); break;
-    }
-    nero_free(val);
-    return typ;
 }
 
 void nero_echo(Value val) {
@@ -399,6 +374,24 @@ Value nero_copy(Value val) {
 }
 
 #define EXPECT(exp) if (argc != exp) { fprintf(stderr, "Error: expected %d argument(s), got %d\n", exp, argc); exit(1); }
+
+Value nero_typeof(int argc, Value *argv) {
+    EXPECT(1);
+    Value typ = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
+    switch (argv[0].type) {
+    case T_BOOL:
+        strcatp(&typ.as_str, "bool"); break;
+    case T_NUMBER:
+        strcatp(&typ.as_str, "number"); break;
+    case T_STRING:
+        strcatp(&typ.as_str, "string"); break;
+    case T_LIST:
+        strcatp(&typ.as_str, "list"); break;
+    default:
+        strcatp(&typ.as_str, "nil"); break;
+    }
+    return typ;
+}
 
 Value nero_stringfy(int argc, Value *argv) {
     Value str = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
@@ -539,6 +532,7 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
     LIST_PUSH(nr->extn, ((Foreign) { "chr", &nero_chr }));
     LIST_PUSH(nr->extn, ((Foreign) { "ord", &nero_ord }));
+    LIST_PUSH(nr->extn, ((Foreign) { "typeof", &nero_typeof }));
     LIST_PUSH(nr->extn, ((Foreign) { "string", &nero_stringfy }));
     LIST_PUSH(nr->extn, ((Foreign) { "system", &nero_system }));
     LIST_PUSH(nr->extn, ((Foreign) { "write_file", &nero_write_file }));
@@ -554,8 +548,14 @@ static inline void free_vars(VariableList *vars) {
     }
 }
 
+static inline VariableList copy_vars(VariableList *vars) {
+    VariableList copy = LIST_ALLOC(Variable);
+    for (int i = 0; i < vars->sz; ++i)
+        LIST_PUSH(copy, vars->ptr[i]);
+    return copy;
+}
+
 Value nero_call(Nero *nr, Function fn) {
-    // XXX: fix recursion (variables get free'd)
     Function *fp = nr->fn;
     nr->fn = &fn;
     Value res = exec_block(nr, fn.code);
@@ -634,7 +634,9 @@ Value exec_assign(Nero *nr) {
     String var = PEEK(0).value;
     ADVANCE(2);
     Value res = exec_expr(nr);
-    set_var(&nr->fn->vars, var, res);
+    if (STRCMPP(nr->fn->name, "<global>"))
+        set_var(&nr->vars, var, res);
+    else set_var(&nr->fn->vars, var, res);
     return res;
 }
 
@@ -677,10 +679,15 @@ Value exec_call(Nero *nr) {
             errpos(nr, tok.line), tok.value.sz, tok.value.ptr, fn.vars.sz, args.as_list.sz);
         exit(1);
     }
+    VariableList vars = fn.vars, copy = copy_vars(&fn.vars);
+    fn.vars = copy;
     for (int i = 0; i < fn.vars.sz; ++i)
         set_var(&fn.vars, fn.vars.ptr[i].name, args.as_list.ptr[i]);
     nero_free(args);
-    return nero_call(nr, fn);
+    Value res = nero_call(nr, fn);
+    LIST_FREE(copy);
+    fn.vars = vars;
+    return res;
 }
 
 Block parse_block(Nero *nr) {
@@ -719,7 +726,7 @@ Value exec_variable(Nero *nr) {
     ADVANCE(1);
     Value res = get_var(&nr->fn->vars, var.value);
     if (res.type == T_BOOL && res.as_num == -1)
-        res = get_var(&nr->global.vars, var.value);
+        res = get_var(&nr->vars, var.value);
     if (res.type == T_BOOL && res.as_num == -1) {
         fprintf(stderr, "Error: %s\nUndefined variable '%.*s'\n",
             errpos(nr, var.line), var.value.sz, var.value.ptr);
@@ -1083,10 +1090,6 @@ Value exec_keyword(Nero *nr) {
         return exec_while(nr);
     if (STRCMPP(key, "quit"))
         exit(0);
-    if (STRCMPP(key, "typeof")) {
-        ADVANCE(1);
-        return nero_typeof(exec_expr(nr));
-    }
     if (STRCMPP(key, "echo")) {
         do {
             ADVANCE(1);
@@ -1143,7 +1146,11 @@ int main(int argc, char **argv) {
     Nero nero = {0};
     tokenize(&nero, argv[1]);
     nero_init_foreign(&nero);
-    Value val = nero_call(&nero, nero.global);
+    Function global = {
+        .name = {.alloc = 0, .sz = 8, .ptr = "<global>"},
+        .code = {0, nero.code.sz},
+    };
+    nero_call(&nero, global);
     nero_free(args_list);
     return 0;
 }
