@@ -229,7 +229,7 @@ Value exec_block(Nero *nr, Block blk);
 
 static inline char *errpos(Nero *nr, int ln) {
     char err[1024];
-    sprintf(err, "[file '%s', line %d, in '%.*s']",
+    sprintf(err, "(file \"%s\", line %d, in \"%.*s\")",
         nr->file, ln, nr->fn->name.sz, nr->fn->name.ptr);
     return err;
 }
@@ -766,14 +766,14 @@ Value exec_term(Nero *nr) {
         ADVANCE(1);
         Value ret = exec_expr(nr);
         if (PEEK(0).kind != TK_RPAREN) {
-            fprintf(stderr, "Error %s\nMissing ')'\n", errpos(nr, line));
+            fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, line));
             exit(1);
         }
         ADVANCE(1);
         return ret;
     }
     default:
-        fprintf(stderr, "Error %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
         exit(1);
     }
 }
