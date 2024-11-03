@@ -229,8 +229,7 @@ Value exec_block(Nero *nr, Block blk);
 
 static inline char *errpos(Nero *nr, int ln) {
     char err[1024];
-    sprintf(err, "[File '%s', Line %d]", nr->file, ln);
-    sprintf(err, "[file '%s', line %d, at '%.*s']",
+    sprintf(err, "[file '%s', line %d, in '%.*s']",
         nr->file, ln, nr->fn->name.sz, nr->fn->name.ptr);
     return err;
 }
