@@ -8,10 +8,17 @@
 #include "nstring.h"
 
 enum {
-    TK_EOF, TK_NIL, TK_FALSE, TK_TRUE, TK_NUMBER, TK_STRING, TK_WORD, TK_KEYWORD,
+    // constants
+    TK_EOF, TK_NIL, TK_FALSE, TK_TRUE, TK_NUMBER, TK_STRING, TK_WORD,
+    // operators
     TK_LPAREN, TK_RPAREN, TK_LBRACK, TK_RBRACK, TK_LSQUARE, TK_RSQUARE, TK_COMMA,
     TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
     TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW,
+    // keywords
+    TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT,
+    // builtin functions
+    TK_ECHO, TK_READ, TK_QUIT,
+    NUM_TOKENS,
 };
 
 // XXX: unkeywordify 'echo', 'read' and 'quit'
@@ -28,8 +35,10 @@ const char *keywords[] = {
     "echo", "read", "quit",
 };
 
+const char *booleans[] = {"nil", "false", "true"};
+
 typedef struct {
-    int kind, line;
+    int kind, line, word;
     String value;
 } Token;
 
@@ -47,6 +56,8 @@ typedef LIST(Foreign) ForeignList;
 
 enum { V_FREE, V_NOFREE };
 enum { T_NIL, T_BOOL, T_NUMBER, T_STRING, T_LIST };
+enum { RET_NO, RET_RETURN, RET_BREAK, RET_NEXT };
+
 typedef struct Value {
     uint8_t type, free;
     union {
@@ -57,7 +68,7 @@ typedef struct Value {
 } Value;
 
 typedef struct Variable {
-    String name;
+    int exists;
     Value value;
 } Variable;
 
@@ -65,8 +76,10 @@ typedef struct {
     int start, end;
 } Block;
 
+#define MAX_ARGS 1024
 typedef struct Function {
-    String name;
+    int exists, num_args;
+    int args[MAX_ARGS];
     VariableList vars;
     Block code;
 } Function;
@@ -81,10 +94,19 @@ typedef struct {
     Function *fn;
 } Nero;
 
-Value args_list;
-enum { RET_NO, RET_RETURN, RET_BREAK, RET_NEXT };
-
 static int line = 1;
+static Value args_list;
+static StringList lexer_words = LIST_EMPTY();
+
+static inline int get_word(String s) {
+    if (!lexer_words.alloc) lexer_words = (StringList) LIST_ALLOC(String);
+    for (int i = 0; i < lexer_words.sz; ++i) {
+        if (STRCMPS(lexer_words.ptr[i], s)) return i;
+    }
+    LIST_PUSH(lexer_words, s);
+    return lexer_words.sz-1;
+}
+
 static inline char skip_space(FILE *fp) {
     char c = fgetc(fp);
     while (c != EOF && isspace(c)) {
@@ -102,14 +124,6 @@ static inline char skip_space(FILE *fp) {
 static inline int is_operator(char op[2], int sz) {
     for (int i = 0; i < LENGTH(ops); ++i) {
         if (!strncmp(ops[i], op, sz))
-            return 1;
-    }
-    return 0;
-}
-
-static inline int is_keyword(String *s) {
-    for (int i = 0; i < LENGTH(keywords); ++i) {
-        if (STRCMPPP(s, keywords[i]))
             return 1;
     }
     return 0;
@@ -176,11 +190,11 @@ static inline Token next_token(FILE *fp) {
     }
 
     tok.value = STRALLOC();
+    tok.kind = TK_WORD;
     while (c != EOF && is_word(c)) {
         LIST_PUSH(tok.value, c);
         c = fgetc(fp);
     }
-    const char *booleans[] = {"nil", "false", "true"};
     for (int i = 0; i < LENGTH(booleans); ++i) {
         if (STRCMPP(tok.value, booleans[i])) {
             STRFREE(tok.value);
@@ -188,7 +202,15 @@ static inline Token next_token(FILE *fp) {
             goto end;
         }
     }
-    tok.kind = is_keyword(&tok.value)? TK_KEYWORD : TK_WORD;
+    for (int i = 0; i < LENGTH(keywords); ++i) {
+        if (STRCMPP(tok.value, keywords[i])) {
+            STRFREE(tok.value);
+            tok.kind = i+TK_DEF;
+            goto end;
+        }
+    }
+    tok.word = get_word(tok.value);
+    // STRFREE(tok.value);
 end:
     ungetc(c, fp);
     return tok;
@@ -222,8 +244,11 @@ Value exec_block(Nero *nr, Block blk);
 
 static inline char *errpos(Nero *nr, int ln) {
     char err[1024];
+    sprintf(err, "(file \"%s\", line %d)", nr->file, ln);
+/*
     sprintf(err, "(file \"%s\", line %d, in \"%.*s\")",
         nr->file, ln, nr->fn->name.sz, nr->fn->name.ptr);
+*/
     return err;
 }
 
@@ -520,6 +545,79 @@ Value nero_read_file(int argc, Value *argv) {
     return (Value){T_STRING, .free = V_FREE, .as_str = text};
 }
 
+Value nero_contains(int argc, Value *argv) {
+    EXPECT(2);
+    if (argv[0].type == T_STRING) {
+        if (argv[1].type != T_STRING) {
+            fprintf(stderr, "Error: expected string\n"); exit(1);
+        }
+        char *str = strstr(argv[0].as_str.ptr, argv[1].as_str.ptr);
+        return (Value) {T_BOOL, .as_num = (str != NULL)};
+    }
+    if (argv[0].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+    for (int i = 0; i < argv[0].as_list.sz; ++i) {
+        Value v = argv[0].as_list.ptr[i];
+        if (nero_equals(v, argv[1]).as_num) return (Value) {T_BOOL, .as_num = 1};
+    }
+    return (Value) {T_BOOL, .as_num = 0};
+}
+
+Value nero_split(int argc, Value *argv) {
+    EXPECT(2);
+    if (argv[0].type != T_STRING) {
+        fprintf(stderr, "Error: expected string\n"); exit(1);
+    }
+    if (argv[1].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+
+    Value list = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    Value tok = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
+    for (int i = 0; i < argv[0].as_str.sz; ++i) {
+        char ch = argv[0].as_str.ptr[i];
+        Value str_i = {T_STRING, .free = V_NOFREE, .as_str = {.sz = 1, .ptr = &ch}};
+        Value args[2] = {argv[1], str_i};
+        if (nero_contains(2, args).as_num) {
+            LIST_PUSH(list.as_list, nero_copy(tok));
+            tok.as_str.sz = 0;
+        } else {
+            LIST_PUSH(tok.as_str, ch);
+        }
+    }
+    LIST_PUSH(list.as_list, nero_copy(tok));
+    nero_free(tok);
+    return list;
+}
+
+Value nero_trim(int argc, Value *argv) {
+    EXPECT(2);
+    if (argv[1].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+    if (argv[0].type == T_STRING) {
+        Value str = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
+        for (int i = 0; i < argv[0].as_str.sz; ++i) {
+            Value str_i = {T_STRING, .as_str = {.sz = 1, .ptr = &argv[0].as_str.ptr[i]}};
+            Value args[2] = {argv[1], str_i};
+            if (!nero_contains(2, args).as_num)
+                strcats(&str.as_str, &str_i.as_str);
+        }
+        return str;
+    }
+    if (argv[0].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+    Value list = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    for (int i = 0; i < argv[0].as_list.sz; ++i) {
+        Value args[2] = {argv[1], argv[0].as_list.ptr[i]};
+        if (!nero_contains(2, args).as_num)
+            LIST_PUSH(list.as_list, nero_copy(argv[0].as_list.ptr[i]));
+    }
+    return list;
+}
+
 Value nero_arguments(int argc, Value *argv) {
     EXPECT(0);
     return nero_copy(args_list);
@@ -537,11 +635,14 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "system", &nero_system }));
     LIST_PUSH(nr->extn, ((Foreign) { "write_file", &nero_write_file }));
     LIST_PUSH(nr->extn, ((Foreign) { "read_file", &nero_read_file }));
+    LIST_PUSH(nr->extn, ((Foreign) { "contains", &nero_contains }));
+    LIST_PUSH(nr->extn, ((Foreign) { "split", &nero_split }));
+    LIST_PUSH(nr->extn, ((Foreign) { "trim", &nero_trim }));
     LIST_PUSH(nr->extn, ((Foreign) { "arguments", &nero_arguments }));
 }
 
 static inline void free_vars(VariableList *vars) {
-    for (int i = 0; i < vars->sz; ++i) {
+    for (int i = 0; i < vars->alloc; ++i) {
         vars->ptr[i].value.free = V_FREE;
         nero_free(vars->ptr[i].value);
         vars->ptr[i].value = (Value) {T_NIL};
@@ -549,9 +650,9 @@ static inline void free_vars(VariableList *vars) {
 }
 
 static inline VariableList copy_vars(VariableList *vars) {
-    VariableList copy = LIST_ALLOC(Variable);
-    for (int i = 0; i < vars->sz; ++i)
-        LIST_PUSH(copy, vars->ptr[i]);
+    VariableList copy = LIST_ALLOCN(Variable, lexer_words.sz);
+    for (int i = 0; i < vars->alloc; ++i)
+        copy.ptr[i] = vars->ptr[i];
     return copy;
 }
 
@@ -565,40 +666,24 @@ Value nero_call(Nero *nr, Function fn) {
     return res;
 }
 
-void set_var(VariableList *vars, String name, Value val) {
-    if (!vars->alloc) *vars = (VariableList) LIST_ALLOC(Variable);
+void set_var(VariableList *vars, int name, Value val) {
+    if (!vars->alloc) {
+        *vars = (VariableList) LIST_ALLOCN(Variable, lexer_words.sz);
+        memset(vars->ptr, 0, vars->alloc*sizeof(Variable));
+    }
     Value cpy = nero_copy(val);
     cpy.free = V_NOFREE;
-    for (int i = 0; i < vars->sz; ++i) {
-        if (STRCMPS(vars->ptr[i].name, name)) {
-            vars->ptr[i].value.free = V_FREE;
-            nero_free(vars->ptr[i].value);
-            vars->ptr[i].value = cpy;
-            return;
-        }
-    }
-    Variable var = {.name = name, .value = cpy};
-    LIST_PUSHP(vars, var);
+    vars->ptr[name] = (Variable) {.exists = 1, .value = cpy};
 }
 
-Value get_var(VariableList *vars, String name) {
-    if (!vars->alloc) goto fail;
-    for (int i = 0; i < vars->sz; ++i) {
-        if (STRCMPS(vars->ptr[i].name, name))
-            return vars->ptr[i].value;
-    }
-fail:
-    return (Value){T_BOOL, .as_num = -1};
+Value get_var(VariableList *vars, int name) {
+    if (!vars->alloc || !vars->ptr[name].exists) return (Value){T_BOOL, .as_num = -1};
+    return vars->ptr[name].value;
 }
 
-Function get_fun(FunctionList *funs, String name) {
-    if (!funs->alloc) goto fail;
-    for (int i = 0; i < funs->sz; ++i) {
-        if (STRCMPS(funs->ptr[i].name, name))
-            return funs->ptr[i];
-    }
-fail:
-    return (Function) {.code = {-1}};
+Function get_fun(FunctionList *funs, int name) {
+    if (!funs->alloc || !funs->ptr[name].exists) return (Function) {.exists = 0};
+    return funs->ptr[name];
 }
 
 Value exec_number(Nero *nr) {
@@ -631,10 +716,10 @@ Value exec_list(Nero *nr) {
 }
 
 Value exec_assign(Nero *nr) {
-    String var = PEEK(0).value;
+    int var = PEEK(0).word;
     ADVANCE(2);
     Value res = exec_expr(nr);
-    if (STRCMPP(nr->fn->name, "<global>"))
+    if (!nr->fn->exists)
         set_var(&nr->vars, var, res);
     else set_var(&nr->fn->vars, var, res);
     return res;
@@ -672,20 +757,21 @@ Value exec_call(Nero *nr) {
     }
     ADVANCE(1);
     Function fn;
-    if ((fn = get_fun(&nr->funs, tok.value)).code.start == -1)
+    if (!(fn = get_fun(&nr->funs, tok.word)).exists)
         return call_foreign(nr, tok, args);
-    if (fn.vars.sz != args.as_list.sz) {
+    if (fn.num_args != args.as_list.sz) {
         fprintf(stderr, "Error: %s\nFunction '%.*s' expects %d argument(s), got %d\n",
-            errpos(nr, tok.line), tok.value.sz, tok.value.ptr, fn.vars.sz, args.as_list.sz);
+            errpos(nr, tok.line), tok.value.sz, tok.value.ptr, fn.num_args, args.as_list.sz);
         exit(1);
     }
-    VariableList vars = fn.vars, copy = copy_vars(&fn.vars);
-    fn.vars = copy;
-    for (int i = 0; i < fn.vars.sz; ++i)
-        set_var(&fn.vars, fn.vars.ptr[i].name, args.as_list.ptr[i]);
+
+    VariableList vars = fn.vars;
+    fn.vars = copy_vars(&fn.vars);
+    for (int i = 0; i < fn.num_args; ++i)
+        set_var(&fn.vars, fn.args[i], args.as_list.ptr[i]);
     nero_free(args);
     Value res = nero_call(nr, fn);
-    LIST_FREE(copy);
+    LIST_FREE(fn.vars);
     fn.vars = vars;
     return res;
 }
@@ -724,9 +810,9 @@ Value exec_variable(Nero *nr) {
         return exec_call(nr);
 
     ADVANCE(1);
-    Value res = get_var(&nr->fn->vars, var.value);
+    Value res = get_var(&nr->fn->vars, var.word);
     if (res.type == T_BOOL && res.as_num == -1)
-        res = get_var(&nr->vars, var.value);
+        res = get_var(&nr->vars, var.word);
     if (res.type == T_BOOL && res.as_num == -1) {
         fprintf(stderr, "Error: %s\nUndefined variable '%.*s'\n",
             errpos(nr, var.line), var.value.sz, var.value.ptr);
@@ -973,7 +1059,7 @@ Value exec_def(Nero *nr) {
         exit(1);
     }
 
-    VariableList args = LIST_ALLOC(Variable);
+    Function fn = {.exists = 1, .num_args = 0, .vars = LIST_EMPTY()};
     do {
         ADVANCE(1); // '(' | ','
         if (PEEK(0).kind == TK_RPAREN) break;
@@ -981,9 +1067,10 @@ Value exec_def(Nero *nr) {
             fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0).line));
             exit(1);
         }
-        String arg = PEEK(0).value;
+        int arg = PEEK(0).word;
         ADVANCE(1); // arg
-        set_var(&args, arg, (Value){T_NIL});
+        set_var(&fn.vars, arg, (Value){T_NIL});
+        fn.args[fn.num_args++] = arg;
     } while (PEEK(0).kind == TK_COMMA);
 
     if (PEEK(0).kind != TK_RPAREN) {
@@ -992,22 +1079,12 @@ Value exec_def(Nero *nr) {
     }
     ADVANCE(1);
 
-    Block code = parse_block(nr);
-    Function fn = {
-        .name = name.value,
-        .code = code,
-        .vars = args,
-    };
-
-    if (!nr->funs.alloc) nr->funs = (FunctionList) LIST_ALLOC(Function);
-    for (int i = 0; i < nr->funs.sz; ++i) {
-        if (STRCMPS(nr->funs.ptr[i].name, fn.name)) {
-            nr->funs.ptr[i] = fn;
-            goto end;
-        }
+    fn.code = parse_block(nr);
+    if (!nr->funs.alloc) {
+        nr->funs = (FunctionList) LIST_ALLOCN(Function, lexer_words.sz);
+        memset(nr->funs.ptr, 0, nr->funs.alloc*sizeof(Function));
     }
-    LIST_PUSH(nr->funs, fn);
-end:
+    nr->funs.ptr[name.word] = fn;
     return (Value) {T_NIL};
 }
 
@@ -1034,10 +1111,10 @@ Value exec_if(Nero *nr) {
         conditions[sz].cond = nero_true(exec_expr(nr));
         conditions[sz].body = parse_block(nr);
         ++sz;
-    } while (PEEK(0).kind == TK_KEYWORD && STRCMPP(PEEK(0).value, "elif"));
+    } while (PEEK(0).kind == TK_ELIF);
 
     Block else_body = {-1};
-    if (PEEK(0).kind == TK_KEYWORD && STRCMPP(PEEK(0).value, "else")) {
+    if (PEEK(0).kind == TK_ELSE) {
         ADVANCE(1);
         else_body = parse_block(nr);
     }
@@ -1074,23 +1151,20 @@ Value exec_while(Nero *nr) {
 }
 
 Value exec_keyword(Nero *nr) {
-    String key = PEEK(0).value;
-
-    if (STRCMPP(key, "def"))
+    switch (PEEK(0).kind) {
+    case TK_DEF:
         return exec_def(nr);
-    if (STRCMPP(key, "return"))
+    case TK_RETURN:
         return exec_return(nr);
-    if (STRCMPP(key, "break"))
+    case TK_BREAK:
         return exec_break(nr, RET_BREAK);
-    if (STRCMPP(key, "next"))
+    case TK_NEXT:
         return exec_break(nr, RET_NEXT);
-    if (STRCMPP(key, "if"))
+    case TK_IF:
         return exec_if(nr);
-    if (STRCMPP(key, "while"))
+    case TK_WHILE:
         return exec_while(nr);
-    if (STRCMPP(key, "quit"))
-        exit(0);
-    if (STRCMPP(key, "echo")) {
+    case TK_ECHO: {
         do {
             ADVANCE(1);
             nero_echo(exec_expr(nr));
@@ -1098,17 +1172,19 @@ Value exec_keyword(Nero *nr) {
         nero_echo((Value) {T_STRING, .as_str = {.sz = 1, .ptr = "\n"}});
         return (Value) {T_NIL};
     }
-    if (STRCMPP(key, "read")) {
+    case TK_READ: {
         do {
             ADVANCE(1);
             nero_echo(exec_expr(nr));
         } while (PEEK(0).kind == TK_COMMA);
         return nero_read();
     }
-
-    fprintf(stderr, "Error: %s\nUnexpected '%.*s'\n",
-        errpos(nr, PEEK(0).line), key.sz, key.ptr);
-    exit(1);
+    case TK_QUIT:
+        exit(0);
+    default:
+        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
+        exit(1);
+    }
 }
 
 Value exec_block(Nero *nr, Block blk) {
@@ -1127,7 +1203,8 @@ Value exec_block(Nero *nr, Block blk) {
 }
 
 Value exec_expr(Nero *nr) {
-    if (PEEK(0).kind == TK_KEYWORD) return exec_keyword(nr);
+    if (PEEK(0).kind >= TK_DEF && PEEK(0).kind <= TK_QUIT)
+        return exec_keyword(nr);
     return exec_andor(nr);
 }
 
@@ -1147,7 +1224,7 @@ int main(int argc, char **argv) {
     tokenize(&nero, argv[1]);
     nero_init_foreign(&nero);
     Function global = {
-        .name = {.alloc = 0, .sz = 8, .ptr = "<global>"},
+        .exists = 0,
         .code = {0, nero.code.sz},
     };
     nero_call(&nero, global);
