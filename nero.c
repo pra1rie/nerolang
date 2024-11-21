@@ -16,12 +16,9 @@ enum {
     TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW,
     // keywords
     TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT,
-    // builtin functions
-    TK_ECHO, TK_READ, TK_QUIT,
     NUM_TOKENS,
 };
 
-// XXX: unkeywordify 'echo', 'read' and 'quit'
 // XXX: implement pow '**', 'import', tables
 
 const char *ops[] = {
@@ -32,7 +29,6 @@ const char *ops[] = {
 
 const char *keywords[] = {
     "def", "return", "if", "elif", "else", "while", "break", "next",
-    "echo", "read", "quit",
 };
 
 const char *booleans[] = {"nil", "false", "true"};
@@ -297,23 +293,6 @@ Value nero_string(Value val) {
     return (Value) {T_STRING, .free = V_FREE, .as_str = str};
 }
 
-void nero_echo(Value val) {
-    Value str = nero_string(val);
-    fprintf(stdout, "%.*s", str.as_str.sz, str.as_str.ptr);
-    nero_free(str);
-    nero_free(val);
-}
-
-Value nero_read() {
-    char *l = NULL; size_t n = 0;
-    getline(&l, &n, stdin);
-    String str = STRALLOC();
-    strcatp(&str, l);
-    LIST_POP(str); // remove last \n
-    free(l);
-    return (Value) {T_STRING, .free = V_FREE, .as_str = str};
-}
-
 int nero_true(Value v) {
     switch (v.type) {
     case T_BOOL:
@@ -416,6 +395,37 @@ Value nero_typeof(int argc, Value *argv) {
         strcatp(&typ.as_str, "nil"); break;
     }
     return typ;
+}
+
+static void nero_print(Value val) {
+    Value str = nero_string(val);
+    fprintf(stdout, "%.*s", str.as_str.sz, str.as_str.ptr);
+    nero_free(str);
+}
+
+Value nero_echo(int argc, Value *argv) {
+    for (int i = 0; i < argc; ++i) nero_print(argv[i]);
+    fprintf(stdout, "\n");
+    return (Value) {T_NIL};
+}
+
+Value nero_read(int argc, Value *argv) {
+    for (int i = 0; i < argc; ++i) nero_print(argv[i]);
+    char *l = NULL; size_t n = 0;
+    getline(&l, &n, stdin);
+    String str = STRALLOC();
+    strcatp(&str, l);
+    LIST_POP(str); // remove last \n
+    free(l);
+    return (Value) {T_STRING, .free = V_FREE, .as_str = str};
+}
+
+Value nero_quit(int argc, Value *argv) {
+    EXPECT(1);
+    if (argv[0].type != T_NUMBER) {
+        fprintf(stderr, "Error: expected number\n"); exit(1);
+    }
+    exit((int)argv[0].as_num);
 }
 
 Value nero_stringfy(int argc, Value *argv) {
@@ -625,6 +635,9 @@ Value nero_arguments(int argc, Value *argv) {
 
 void nero_init_foreign(Nero *nr) {
     nr->extn = (ForeignList) LIST_ALLOC(Foreign);
+    LIST_PUSH(nr->extn, ((Foreign) { "echo", &nero_echo }));
+    LIST_PUSH(nr->extn, ((Foreign) { "read", &nero_read }));
+    LIST_PUSH(nr->extn, ((Foreign) { "quit", &nero_quit }));
     LIST_PUSH(nr->extn, ((Foreign) { "push", &nero_push }));
     LIST_PUSH(nr->extn, ((Foreign) { "pop", &nero_pop }));
     LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
@@ -1164,23 +1177,6 @@ Value exec_keyword(Nero *nr) {
         return exec_if(nr);
     case TK_WHILE:
         return exec_while(nr);
-    case TK_ECHO: {
-        do {
-            ADVANCE(1);
-            nero_echo(exec_expr(nr));
-        } while (PEEK(0).kind == TK_COMMA);
-        nero_echo((Value) {T_STRING, .as_str = {.sz = 1, .ptr = "\n"}});
-        return (Value) {T_NIL};
-    }
-    case TK_READ: {
-        do {
-            ADVANCE(1);
-            nero_echo(exec_expr(nr));
-        } while (PEEK(0).kind == TK_COMMA);
-        return nero_read();
-    }
-    case TK_QUIT:
-        exit(0);
     default:
         fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
         exit(1);
@@ -1203,7 +1199,7 @@ Value exec_block(Nero *nr, Block blk) {
 }
 
 Value exec_expr(Nero *nr) {
-    if (PEEK(0).kind >= TK_DEF && PEEK(0).kind <= TK_QUIT)
+    if (PEEK(0).kind >= TK_DEF && PEEK(0).kind <= TK_NEXT)
         return exec_keyword(nr);
     return exec_andor(nr);
 }
