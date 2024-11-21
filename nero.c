@@ -22,7 +22,7 @@ enum {
 };
 
 // XXX: unkeywordify 'echo', 'read' and 'quit'
-// XXX: implement pow '**', 'import'
+// XXX: implement pow '**', 'import', tables
 
 const char *ops[] = {
     "(", ")", "{", "}", "[", "]", ",", "=", "!",
