@@ -8,14 +8,20 @@
 #include "nstring.h"
 
 enum {
-    TK_EOF, TK_NIL, TK_FALSE, TK_TRUE, TK_NUMBER, TK_STRING, TK_WORD, TK_KEYWORD,
+    // constants
+    TK_EOF, TK_NIL, TK_FALSE, TK_TRUE, TK_NUMBER, TK_STRING, TK_WORD,
+    // operators
     TK_LPAREN, TK_RPAREN, TK_LBRACK, TK_RBRACK, TK_LSQUARE, TK_RSQUARE, TK_COMMA,
     TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
     TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW,
+    // keywords
+    TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT,
 };
 
-// XXX: unkeywordify 'echo', 'read' and 'quit'
-// XXX: implement pow '**', 'import'
+// XXX: implement pow '**', 'import', tables, first-class functions
+
+#define GLOBAL_SCOPE "<global>"
+#define MAX_CONDITIONS 1024
 
 const char *ops[] = {
     "(", ")", "{", "}", "[", "]", ",", "=", "!",
@@ -25,7 +31,6 @@ const char *ops[] = {
 
 const char *keywords[] = {
     "def", "return", "if", "elif", "else", "while", "break", "next",
-    "echo", "read", "quit",
 };
 
 typedef struct {
@@ -188,7 +193,14 @@ static inline Token next_token(FILE *fp) {
             goto end;
         }
     }
-    tok.kind = is_keyword(&tok.value)? TK_KEYWORD : TK_WORD;
+    for (int i = 0; i < LENGTH(keywords); ++i) {
+        if (STRCMPP(tok.value, keywords[i])) {
+            STRFREE(tok.value);
+            tok.kind = i+TK_DEF;
+            goto end;
+        }
+    }
+    tok.kind = TK_WORD;
 end:
     ungetc(c, fp);
     return tok;
@@ -272,21 +284,10 @@ Value nero_string(Value val) {
     return (Value) {T_STRING, .free = V_FREE, .as_str = str};
 }
 
-void nero_echo(Value val) {
+void nero_print(Value val) {
     Value str = nero_string(val);
     fprintf(stdout, "%.*s", str.as_str.sz, str.as_str.ptr);
     nero_free(str);
-    nero_free(val);
-}
-
-Value nero_read() {
-    char *l = NULL; size_t n = 0;
-    getline(&l, &n, stdin);
-    String str = STRALLOC();
-    strcatp(&str, l);
-    LIST_POP(str); // remove last \n
-    free(l);
-    return (Value) {T_STRING, .free = V_FREE, .as_str = str};
 }
 
 int nero_true(Value v) {
@@ -401,6 +402,31 @@ Value nero_stringfy(int argc, Value *argv) {
         nero_free(s);
     }
     return str;
+}
+
+Value nero_echo(int argc, Value *argv) {
+    for (int i = 0; i < argc; ++i) nero_print(argv[i]);
+    fprintf(stdout, "\n");
+    return (Value) {T_NIL};
+}
+
+Value nero_read(int argc, Value *argv) {
+    for (int i = 0; i < argc; ++i) nero_print(argv[i]);
+    char *l = NULL; size_t n = 0;
+    getline(&l, &n, stdin);
+    String str = STRALLOC();
+    strcatp(&str, l);
+    LIST_POP(str); // remove last \n
+    free(l);
+    return (Value) {T_STRING, .free = V_FREE, .as_str = str};
+}
+
+Value nero_exit(int argc, Value *argv) {
+    EXPECT(1);
+    if (argv[0].type != T_NUMBER) {
+        fprintf(stderr, "Error: expected number\n"); exit(1);
+    }
+    exit((int)argv[0].as_num);
 }
 
 Value nero_push(int argc, Value *argv) {
@@ -527,6 +553,9 @@ Value nero_arguments(int argc, Value *argv) {
 
 void nero_init_foreign(Nero *nr) {
     nr->extn = (ForeignList) LIST_ALLOC(Foreign);
+    LIST_PUSH(nr->extn, ((Foreign) { "echo", &nero_echo }));
+    LIST_PUSH(nr->extn, ((Foreign) { "read", &nero_read }));
+    LIST_PUSH(nr->extn, ((Foreign) { "exit", &nero_exit }));
     LIST_PUSH(nr->extn, ((Foreign) { "push", &nero_push }));
     LIST_PUSH(nr->extn, ((Foreign) { "pop", &nero_pop }));
     LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
@@ -1027,17 +1056,17 @@ Value exec_break(Nero *nr, uint8_t brk) {
 }
 
 Value exec_if(Nero *nr) {
-    struct { int cond; Block body; } conditions[1024];
+    struct { int cond; Block body; } conditions[MAX_CONDITIONS];
     int sz = 0;
     do {
         ADVANCE(1);
         conditions[sz].cond = nero_true(exec_expr(nr));
         conditions[sz].body = parse_block(nr);
         ++sz;
-    } while (PEEK(0).kind == TK_KEYWORD && STRCMPP(PEEK(0).value, "elif"));
+    } while (PEEK(0).kind == TK_ELIF);
 
     Block else_body = {-1};
-    if (PEEK(0).kind == TK_KEYWORD && STRCMPP(PEEK(0).value, "else")) {
+    if (PEEK(0).kind == TK_ELSE) {
         ADVANCE(1);
         else_body = parse_block(nr);
     }
@@ -1074,41 +1103,23 @@ Value exec_while(Nero *nr) {
 }
 
 Value exec_keyword(Nero *nr) {
-    String key = PEEK(0).value;
-
-    if (STRCMPP(key, "def"))
+    switch (PEEK(0).kind) {
+    case TK_DEF:
         return exec_def(nr);
-    if (STRCMPP(key, "return"))
+    case TK_RETURN:
         return exec_return(nr);
-    if (STRCMPP(key, "break"))
+    case TK_BREAK:
         return exec_break(nr, RET_BREAK);
-    if (STRCMPP(key, "next"))
+    case TK_NEXT:
         return exec_break(nr, RET_NEXT);
-    if (STRCMPP(key, "if"))
+    case TK_IF:
         return exec_if(nr);
-    if (STRCMPP(key, "while"))
+    case TK_WHILE:
         return exec_while(nr);
-    if (STRCMPP(key, "quit"))
-        exit(0);
-    if (STRCMPP(key, "echo")) {
-        do {
-            ADVANCE(1);
-            nero_echo(exec_expr(nr));
-        } while (PEEK(0).kind == TK_COMMA);
-        nero_echo((Value) {T_STRING, .as_str = {.sz = 1, .ptr = "\n"}});
-        return (Value) {T_NIL};
+    default:
+        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
+        exit(1);
     }
-    if (STRCMPP(key, "read")) {
-        do {
-            ADVANCE(1);
-            nero_echo(exec_expr(nr));
-        } while (PEEK(0).kind == TK_COMMA);
-        return nero_read();
-    }
-
-    fprintf(stderr, "Error: %s\nUnexpected '%.*s'\n",
-        errpos(nr, PEEK(0).line), key.sz, key.ptr);
-    exit(1);
 }
 
 Value exec_block(Nero *nr, Block blk) {
@@ -1127,7 +1138,8 @@ Value exec_block(Nero *nr, Block blk) {
 }
 
 Value exec_expr(Nero *nr) {
-    if (PEEK(0).kind == TK_KEYWORD) return exec_keyword(nr);
+    if (PEEK(0).kind >= TK_DEF && PEEK(0).kind <= TK_NEXT)
+        return exec_keyword(nr);
     return exec_andor(nr);
 }
 
