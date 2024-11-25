@@ -13,12 +13,12 @@ enum {
     // operators
     TK_LPAREN, TK_RPAREN, TK_LBRACK, TK_RBRACK, TK_LSQUARE, TK_RSQUARE, TK_COMMA,
     TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
-    TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW,
+    TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW, TK_DOT,
     // keywords
     TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT,
 };
 
-// XXX: implement pow '**', 'import', tables, first-class functions
+// XXX: implement pow '**', 'import', first-class functions
 
 #define GLOBAL_SCOPE "<global>"
 #define MAX_CONDITIONS 1024
@@ -26,7 +26,7 @@ enum {
 const char *ops[] = {
     "(", ")", "{", "}", "[", "]", ",", "=", "!",
     "==", "!=", "<", ">", "<=", ">=", "&&", "||",
-    "+", "-", "*", "/", "%", "**",
+    "+", "-", "*", "/", "%", "**", ".",
 };
 
 const char *keywords[] = {
@@ -51,13 +51,14 @@ typedef LIST(struct Function) FunctionList;
 typedef LIST(Foreign) ForeignList;
 
 enum { V_FREE, V_NOFREE };
-enum { T_NIL, T_BOOL, T_NUMBER, T_STRING, T_LIST };
+enum { T_NIL, T_BOOL, T_NUMBER, T_STRING, T_LIST, T_DICT };
 typedef struct Value {
     uint8_t type, free;
     union {
         double as_num;
         String as_str;
         ValueList as_list;
+        VariableList as_dict;
     };
 } Value;
 
@@ -231,6 +232,8 @@ fail:
 
 Value exec_expr(Nero *nr);
 Value exec_block(Nero *nr, Block blk);
+static inline void free_vars(VariableList *vars);
+void set_var(VariableList *vars, String name, Value val);
 
 static inline char *errpos(Nero *nr, int ln) {
     char err[1024];
@@ -243,6 +246,10 @@ static inline void nero_free(Value val) {
     if (val.free == V_NOFREE) return;
     if (val.type == T_STRING && val.as_str.alloc) {
         STRFREE(val.as_str);
+    }
+    else if (val.type == T_DICT && val.as_dict.alloc) {
+        free_vars(&val.as_dict);
+        LIST_FREE(val.as_dict);
     }
     else if (val.type == T_LIST && val.as_list.alloc) {
         for (int i = 0; i < val.as_list.sz; ++i) {
@@ -276,6 +283,18 @@ Value nero_string(Value val) {
             nero_free(v);
         }
         strcatp(&str, "]");
+        break;
+    case T_DICT:
+        strcatp(&str, "{");
+        for (int i = 0; i < val.as_dict.sz; ++i) {
+            if (i > 0) strcatp(&str, ", ");
+            strcats(&str, &val.as_dict.ptr[i].name);
+            strcatp(&str, " = ");
+            Value v = nero_string(val.as_dict.ptr[i].value);
+            strcats(&str, &v.as_str);
+            nero_free(v);
+        }
+        strcatp(&str, "}");
         break;
     default:
         strcatp(&str, "nil");
@@ -370,6 +389,11 @@ Value nero_copy(Value val) {
         for (int i = 0; i < val.as_list.sz; ++i)
             LIST_PUSH(res.as_list, nero_copy(val.as_list.ptr[i]));
         break;
+    case T_DICT:
+        res.as_dict = (VariableList) LIST_ALLOCN(Variable, val.as_dict.alloc);
+        for (int i = 0; i < val.as_dict.sz; ++i)
+            set_var(&res.as_dict, val.as_dict.ptr[i].name, val.as_dict.ptr[i].value);
+        break;
     }
     return res;
 }
@@ -388,6 +412,8 @@ Value nero_typeof(int argc, Value *argv) {
         strcatp(&typ.as_str, "string"); break;
     case T_LIST:
         strcatp(&typ.as_str, "list"); break;
+    case T_DICT:
+        strcatp(&typ.as_str, "dict"); break;
     default:
         strcatp(&typ.as_str, "nil"); break;
     }
@@ -427,6 +453,21 @@ Value nero_exit(int argc, Value *argv) {
         fprintf(stderr, "Error: expected number\n"); exit(1);
     }
     exit((int)argv[0].as_num);
+}
+
+Value nero_dict_keys(int argc, Value *argv) {
+    EXPECT(1);
+    if (argv[0].type != T_DICT) {
+        fprintf(stderr, "Error: expected dict\n"); exit(1);
+    }
+    Value keys = {T_LIST, .free = V_FREE, .as_list = (ValueList) LIST_ALLOC(Value)};
+
+    for (int i = 0; i < argv[0].as_dict.sz; ++i) {
+        Value key = nero_copy((Value){T_STRING, .as_str = argv[0].as_dict.ptr[i].name});
+        LIST_PUSH(keys.as_list, key);
+    }
+
+    return keys;
 }
 
 Value nero_push(int argc, Value *argv) {
@@ -629,6 +670,7 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "echo", &nero_echo }));
     LIST_PUSH(nr->extn, ((Foreign) { "read", &nero_read }));
     LIST_PUSH(nr->extn, ((Foreign) { "exit", &nero_exit }));
+    LIST_PUSH(nr->extn, ((Foreign) { "dict_keys", &nero_dict_keys }));
     LIST_PUSH(nr->extn, ((Foreign) { "push", &nero_push }));
     LIST_PUSH(nr->extn, ((Foreign) { "pop", &nero_pop }));
     LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
@@ -660,16 +702,6 @@ static inline VariableList copy_vars(VariableList *vars) {
     return copy;
 }
 
-Value nero_call(Nero *nr, Function fn) {
-    Function *fp = nr->fn;
-    nr->fn = &fn;
-    Value res = exec_block(nr, fn.code);
-    free_vars(&fn.vars);
-    nr->ret = RET_NO;
-    nr->fn = fp;
-    return res;
-}
-
 void set_var(VariableList *vars, String name, Value val) {
     if (!vars->alloc) *vars = (VariableList) LIST_ALLOC(Variable);
     Value cpy = nero_copy(val);
@@ -696,6 +728,16 @@ fail:
     return (Value){T_BOOL, .as_num = -1};
 }
 
+Value nero_call(Nero *nr, Function fn) {
+    Function *fp = nr->fn;
+    nr->fn = &fn;
+    Value res = exec_block(nr, fn.code);
+    free_vars(&fn.vars);
+    nr->ret = RET_NO;
+    nr->fn = fp;
+    return res;
+}
+
 Function get_fun(FunctionList *funs, String name) {
     if (!funs->alloc) goto fail;
     for (int i = 0; i < funs->sz; ++i) {
@@ -714,6 +756,34 @@ Value exec_number(Nero *nr) {
 
 Value exec_string(Nero *nr) {
     Value val = nero_copy((Value){T_STRING, .free = V_FREE, .as_str = PEEK(0).value});
+    ADVANCE(1);
+    return val;
+}
+
+Value exec_dict(Nero *nr) {
+    Value val = {T_DICT, .free = V_FREE, .as_dict = (VariableList) LIST_ALLOC(Variable)};
+    do {
+        ADVANCE(1); // '{' | ','
+        if (PEEK(0).kind == TK_RBRACK) break;
+        if (PEEK(0).kind != TK_WORD) {
+            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0).line));
+            exit(1);
+        }
+        String key = PEEK(0).value;
+        ADVANCE(1);
+        if (PEEK(0).kind != TK_EQ) {
+            fprintf(stderr, "Error: %s\nMissing '='\n", errpos(nr, PEEK(0).line));
+            exit(1);
+        }
+        ADVANCE(1);
+        Value v = exec_expr(nr);
+        set_var(&val.as_dict, key, v);
+        nero_free(v);
+    } while (PEEK(0).kind == TK_COMMA);
+    if (PEEK(0).kind != TK_RBRACK) {
+        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0).line));
+        exit(1);
+    }
     ADVANCE(1);
     return val;
 }
@@ -853,6 +923,8 @@ Value exec_term(Nero *nr) {
         return (Value) {T_NIL};
     case TK_LSQUARE:
         return exec_list(nr);
+    case TK_LBRACK:
+        return exec_dict(nr);
     case TK_FALSE:
         ADVANCE(1);
         return (Value) {T_BOOL, .as_num = 0};
@@ -888,6 +960,48 @@ Value exec_term(Nero *nr) {
         fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
         exit(1);
     }
+}
+
+Value exec_dict_index_assign(Nero *nr, Value dict, String key) {
+    ADVANCE(1);
+    Value val = exec_expr(nr);
+    set_var(&dict.as_dict, key, val);
+    return val;
+}
+
+Value exec_dict_index(Nero *nr, Value dict) {
+    if (dict.type != T_DICT) {
+        fprintf(stderr, "Error: %s\nExpected dict\n", errpos(nr, PEEK(0).line));
+        exit(1);
+    }
+    if (PEEK(0).kind != TK_DOT) {
+        fprintf(stderr, "Error: %s\nMissing '.'\n", errpos(nr, PEEK(0).line));
+        exit(1);
+    }
+    ADVANCE(1);
+    if (PEEK(0).kind != TK_WORD) {
+        fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0).line));
+        exit(1);
+    }
+    Token key = PEEK(0);
+    ADVANCE(1);
+
+    if (PEEK(0).kind == TK_EQ)
+        return exec_dict_index_assign(nr, dict, key.value);
+
+    Value val = get_var(&dict.as_dict, key.value);
+    if (val.type == T_BOOL && val.as_num == -1) {
+        fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
+                errpos(nr, key.line), key.value.sz, key.value.ptr);
+        exit(1);
+    }
+    if (dict.free == V_NOFREE) {
+        val.free = V_NOFREE;
+        return val;
+    }
+    val = nero_copy(val);
+    nero_free(dict);
+    return val;
 }
 
 Value exec_list_index_assign(Nero *nr, Value list, int64_t idx) {
@@ -948,8 +1062,11 @@ Value exec_list_index(Nero *nr, Value list) {
 
 Value exec_factor(Nero *nr) {
     Value val = exec_term(nr);
-    while (PEEK(0).kind == TK_LSQUARE)
-        val = exec_list_index(nr, val);
+    while (1) {
+        if (PEEK(0).kind == TK_LSQUARE) val = exec_list_index(nr, val);
+        else if (PEEK(0).kind == TK_DOT) val = exec_dict_index(nr, val);
+        else break;
+    }
     return val;
 }
 
