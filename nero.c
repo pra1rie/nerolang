@@ -546,6 +546,79 @@ Value nero_read_file(int argc, Value *argv) {
     return (Value){T_STRING, .free = V_FREE, .as_str = text};
 }
 
+Value nero_contains(int argc, Value *argv) {
+    EXPECT(2);
+    if (argv[0].type == T_STRING) {
+        if (argv[1].type != T_STRING) {
+            fprintf(stderr, "Error: expected string\n"); exit(1);
+        }
+        char *str = strstr(argv[0].as_str.ptr, argv[1].as_str.ptr);
+        return (Value) {T_BOOL, .as_num = (str != NULL)};
+    }
+    if (argv[0].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+    for (int i = 0; i < argv[0].as_list.sz; ++i) {
+        Value v = argv[0].as_list.ptr[i];
+        if (nero_equals(v, argv[1]).as_num) return (Value) {T_BOOL, .as_num = 1};
+    }
+    return (Value) {T_BOOL, .as_num = 0};
+}
+
+Value nero_split(int argc, Value *argv) {
+    EXPECT(2);
+    if (argv[0].type != T_STRING) {
+        fprintf(stderr, "Error: expected string\n"); exit(1);
+    }
+    if (argv[1].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+
+    Value list = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    Value tok = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
+    for (int i = 0; i < argv[0].as_str.sz; ++i) {
+        char ch = argv[0].as_str.ptr[i];
+        Value str_i = {T_STRING, .free = V_NOFREE, .as_str = {.sz = 1, .ptr = &ch}};
+        Value args[2] = {argv[1], str_i};
+        if (nero_contains(2, args).as_num) {
+            LIST_PUSH(list.as_list, nero_copy(tok));
+            tok.as_str.sz = 0;
+        } else {
+            LIST_PUSH(tok.as_str, ch);
+        }
+    }
+    LIST_PUSH(list.as_list, nero_copy(tok));
+    nero_free(tok);
+    return list;
+}
+
+Value nero_trim(int argc, Value *argv) {
+    EXPECT(2);
+    if (argv[1].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+    if (argv[0].type == T_STRING) {
+        Value str = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
+        for (int i = 0; i < argv[0].as_str.sz; ++i) {
+            Value str_i = {T_STRING, .as_str = {.sz = 1, .ptr = &argv[0].as_str.ptr[i]}};
+            Value args[2] = {argv[1], str_i};
+            if (!nero_contains(2, args).as_num)
+                strcats(&str.as_str, &str_i.as_str);
+        }
+        return str;
+    }
+    if (argv[0].type != T_LIST) {
+        fprintf(stderr, "Error: expected list\n"); exit(1);
+    }
+    Value list = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    for (int i = 0; i < argv[0].as_list.sz; ++i) {
+        Value args[2] = {argv[1], argv[0].as_list.ptr[i]};
+        if (!nero_contains(2, args).as_num)
+            LIST_PUSH(list.as_list, nero_copy(argv[0].as_list.ptr[i]));
+    }
+    return list;
+}
+
 Value nero_arguments(int argc, Value *argv) {
     EXPECT(0);
     return nero_copy(args_list);
@@ -566,6 +639,9 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "system", &nero_system }));
     LIST_PUSH(nr->extn, ((Foreign) { "write_file", &nero_write_file }));
     LIST_PUSH(nr->extn, ((Foreign) { "read_file", &nero_read_file }));
+    LIST_PUSH(nr->extn, ((Foreign) { "contains", &nero_contains }));
+    LIST_PUSH(nr->extn, ((Foreign) { "split", &nero_split }));
+    LIST_PUSH(nr->extn, ((Foreign) { "trim", &nero_trim }));
     LIST_PUSH(nr->extn, ((Foreign) { "arguments", &nero_arguments }));
 }
 
