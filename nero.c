@@ -234,6 +234,8 @@ Value exec_expr(Nero *nr);
 Value exec_block(Nero *nr, Block blk);
 static inline void free_vars(VariableList *vars);
 void set_var(VariableList *vars, String name, Value val);
+Value get_var(VariableList *vars, String name);
+Value nero_dict_keys(int argc, Value *argv);
 
 static inline char *errpos(Nero *nr, int ln) {
     char err[1024];
@@ -268,7 +270,10 @@ Value nero_string(Value val) {
         strcatp(&str, val.as_num? "true" : "false");
         break;
     case T_NUMBER:
-        sprintf(num, "%.2lf", val.as_num);
+        if (val.as_num == (long)val.as_num)
+            sprintf(num, "%ld", (long)val.as_num);
+        else
+            sprintf(num, "%.2lf", val.as_num);
         strcatp(&str, num);
         break;
     case T_STRING:
@@ -345,6 +350,19 @@ Value nero_equals(Value a, Value b) {
                 break;
             }
         }
+    } break;
+    case T_DICT: {
+        if (a.as_list.sz != b.as_list.sz) break;
+        res.as_num = 1;
+        Value keys = nero_dict_keys(1, &a);
+        for (int i = 0; i < keys.as_list.sz; ++i) {
+            String key = keys.as_list.ptr[i].as_str;
+            if (!nero_equals(get_var(&a.as_dict, key), get_var(&b.as_dict, key)).as_num) {
+                res.as_num = 0;
+                break;
+            }
+        }
+        nero_free(keys);
     } break;
     default:
         break;
@@ -986,15 +1004,17 @@ Value exec_dict_index(Nero *nr, Value dict) {
     Token key = PEEK(0);
     ADVANCE(1);
 
-    if (PEEK(0).kind == TK_EQ)
-        return exec_dict_index_assign(nr, dict, key.value);
-
     Value val = get_var(&dict.as_dict, key.value);
     if (val.type == T_BOOL && val.as_num == -1) {
         fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
                 errpos(nr, key.line), key.value.sz, key.value.ptr);
         exit(1);
     }
+
+    // XXX: add new keys to dict with '='
+    if (PEEK(0).kind == TK_EQ)
+        return exec_dict_index_assign(nr, dict, key.value);
+
     if (dict.free == V_NOFREE) {
         val.free = V_NOFREE;
         return val;
