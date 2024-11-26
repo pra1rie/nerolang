@@ -511,7 +511,7 @@ Value nero_dict_get(int argc, Value *argv) {
     String key = argv[1].as_str;
     Value val = get_var(&argv[0].as_dict, key);
     if (val.type == T_BOOL && val.as_num == -1)
-        SIMPLE_ERROR("dict has no key '%.*s'\n", key.sz, key.ptr);
+        SIMPLE_ERROR("Dict has no key '%.*s'\n", key.sz, key.ptr);
     return nero_copy(val);
 }
 
@@ -554,7 +554,7 @@ Value nero_pop(int argc, Value *argv) {
     LIST_POPP(list);
     return nero_copy(argv[0]);
 fail:
-    SIMPLE_ERROR("list index out of range\n");
+    SIMPLE_ERROR("List index out of range\n");
 }
 
 Value nero_len(int argc, Value *argv) {
@@ -577,7 +577,7 @@ Value nero_ord(int argc, Value *argv) {
     EXPECT(1);
     EXPECT_TYPE(argv[0], T_STRING);
     if (argv[0].as_str.sz != 1)
-        SIMPLE_ERROR("expected string of size 1\n");
+        SIMPLE_ERROR("Expected string of size 1\n");
     return (Value){T_NUMBER, .as_num = argv[0].as_str.ptr[0]};
 }
 
@@ -597,7 +597,7 @@ Value nero_write_file(int argc, Value *argv) {
     sprintf(file, "%.*s", argv[0].as_str.sz, argv[0].as_str.ptr);
     FILE *fp = fopen(file, "w+");
     if (!fp)
-        SIMPLE_ERROR("could not write file '%s'\n", file);
+        SIMPLE_ERROR("Could not write file '%s'\n", file);
     Value str = nero_string(argv[1]);
     fwrite(str.as_str.ptr, sizeof(char), str.as_str.sz, fp);
     nero_free(str);
@@ -614,12 +614,12 @@ Value nero_read_file(int argc, Value *argv) {
     int sz = 0;
     String text;
     if (!fp)
-        SIMPLE_ERROR("could not read file '%s'\n", file);
+        SIMPLE_ERROR("Could not read file '%s'\n", file);
     fseek(fp, 0, SEEK_END);
     if (sz = ftell(fp)) text = STRALLOCN(sz);
     fseek(fp, 0, SEEK_SET);
     if (fread(text.ptr, sizeof(char), sz, fp) != sz)
-        SIMPLE_ERROR("failed to read file '%s'\n", file);
+        SIMPLE_ERROR("Failed to read file '%s'\n", file);
     text.sz = sz;
     fclose(fp);
     return (Value){T_STRING, .free = V_FREE, .as_str = text};
