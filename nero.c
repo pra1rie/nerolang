@@ -980,14 +980,7 @@ Value exec_term(Nero *nr) {
     }
 }
 
-Value exec_dict_index_assign(Nero *nr, Value dict, String key) {
-    ADVANCE(1);
-    Value val = exec_expr(nr);
-    set_var(&dict.as_dict, key, val);
-    return val;
-}
-
-Value exec_dict_index(Nero *nr, Value dict) {
+Value exec_dict_key(Nero *nr, Value dict) {
     if (dict.type != T_DICT) {
         fprintf(stderr, "Error: %s\nExpected dict\n", errpos(nr, PEEK(0).line));
         exit(1);
@@ -1004,6 +997,14 @@ Value exec_dict_index(Nero *nr, Value dict) {
     Token key = PEEK(0);
     ADVANCE(1);
 
+    // XXX: add new keys to dict with '=' (idk why it not working)
+    if (PEEK(0).kind == TK_EQ) {
+        ADVANCE(1);
+        Value val = exec_expr(nr);
+        set_var(&dict.as_dict, key.value, val);
+        return val;
+    }
+
     Value val = get_var(&dict.as_dict, key.value);
     if (val.type == T_BOOL && val.as_num == -1) {
         fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
@@ -1011,24 +1012,12 @@ Value exec_dict_index(Nero *nr, Value dict) {
         exit(1);
     }
 
-    // XXX: add new keys to dict with '='
-    if (PEEK(0).kind == TK_EQ)
-        return exec_dict_index_assign(nr, dict, key.value);
-
     if (dict.free == V_NOFREE) {
         val.free = V_NOFREE;
         return val;
     }
     val = nero_copy(val);
     nero_free(dict);
-    return val;
-}
-
-Value exec_list_index_assign(Nero *nr, Value list, int64_t idx) {
-    ADVANCE(1);
-    Value val = exec_expr(nr);
-    nero_free(list.as_list.ptr[idx]);
-    list.as_list.ptr[idx] = nero_copy(val);
     return val;
 }
 
@@ -1067,8 +1056,13 @@ Value exec_list_index(Nero *nr, Value list) {
         fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk.line));
         exit(1);
     }
-    if (PEEK(0).kind == TK_EQ)
-        return exec_list_index_assign(nr, list, i);
+    if (PEEK(0).kind == TK_EQ) {
+        ADVANCE(1);
+        Value val = exec_expr(nr);
+        nero_free(list.as_list.ptr[i]);
+        list.as_list.ptr[i] = nero_copy(val);
+        return val;
+    }
 
     if (list.free == V_NOFREE) {
         Value val = list.as_list.ptr[i];
@@ -1084,7 +1078,7 @@ Value exec_factor(Nero *nr) {
     Value val = exec_term(nr);
     while (1) {
         if (PEEK(0).kind == TK_LSQUARE) val = exec_list_index(nr, val);
-        else if (PEEK(0).kind == TK_DOT) val = exec_dict_index(nr, val);
+        else if (PEEK(0).kind == TK_DOT) val = exec_dict_key(nr, val);
         else break;
     }
     return val;
