@@ -88,9 +88,9 @@ typedef struct {
     Function *fn;
 } Nero;
 
-Value args_list;
 enum { RET_NO, RET_RETURN, RET_BREAK, RET_NEXT };
 
+static ValueList args_list = {.alloc = 0};
 static StringList files = {.alloc = 0};
 static int line = 1;
 
@@ -717,7 +717,8 @@ Value nero_trim(int argc, Value *argv) {
 
 Value nero_arguments(int argc, Value *argv) {
     EXPECT(0);
-    return nero_copy(args_list);
+    Value list = nero_copy((Value){T_LIST, .as_list = args_list});
+    return list;
 }
 
 void nero_init_foreign(Nero *nr) {
@@ -1064,19 +1065,19 @@ Value exec_dict_key(Nero *nr, Value dict) {
     return val;
 }
 
-void nero_check_bounds(Nero *nr, Value list, int idx) {
+void nero_check_bounds(Nero *nr, Value list, int64_t idx) {
     if (list.type != T_LIST && list.type != T_STRING) {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
         exit(1);
     }
-    int sz = list.type == T_STRING? list.as_str.sz : list.as_list.sz;
-    if (idx < 0 || idx > sz) {
+    int64_t sz = list.type == T_STRING? list.as_str.sz : list.as_list.sz;
+    if (idx < 0 || idx >= sz) {
         fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, PEEK(0)));
         exit(1);
     }
 }
 
-Value nero_get_index(Nero *nr, Value list, int idx) {
+Value nero_get_index(Nero *nr, Value list, int64_t idx) {
     Value val;
     nero_check_bounds(nr, list, idx);
     if (list.type == T_STRING) {
@@ -1085,11 +1086,6 @@ Value nero_get_index(Nero *nr, Value list, int idx) {
         return val;
     }
 
-    /* if (list.free == V_NOFREE) { */
-    /*     val = list.as_list.ptr[idx]; */
-    /*     val.free = V_NOFREE; */
-    /*     return val; */
-    /* } */
     val = nero_copy(list.as_list.ptr[idx]);
     nero_free(list);
     return val;
@@ -1106,33 +1102,34 @@ Value exec_list_index(Nero *nr, Value list) {
     }
     Token tk = PEEK(0);
     ADVANCE(1);
-    Value idx = exec_expr(nr);
+    Value index = exec_expr(nr);
     if (PEEK(0).kind != TK_RSQUARE) {
         fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
-    if (idx.type != T_NUMBER) {
+    if (index.type != T_NUMBER) {
         fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
         exit(1);
     }
-    int64_t i = (int64_t)idx.as_num;
-    nero_check_bounds(nr, list, i);
 
+    int64_t idx = (int64_t)index.as_num;
     if (PEEK(0).kind == TK_EQ) {
         if (list.type != T_LIST) {
             fprintf(stderr, "Error: %s\nUnexpected '='\n", errpos(nr, tk));
             exit(1);
         }
         ADVANCE(1);
+
+        nero_check_bounds(nr, list, idx);
         Value val = exec_expr(nr);
-        nero_free(list.as_list.ptr[i]);
-        list.as_list.ptr[i] = nero_copy(val);
+        nero_free(list.as_list.ptr[idx]);
+        list.as_list.ptr[idx] = nero_copy(val);
         nero_free(list);
         return val;
     }
 
-    return nero_get_index(nr, list, i);
+    return nero_get_index(nr, list, idx);
 }
 
 Value exec_factor(Nero *nr) {
@@ -1484,10 +1481,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    args_list = (Value) {T_LIST, .free = V_FREE, .as_list = (ValueList) LIST_ALLOC(Value)};
+    args_list = (ValueList) LIST_ALLOC(Value);
     for (int i = 1; i < argc; ++i) {
         Value arg = {T_STRING, .as_str = {.sz = strlen(argv[i]), .ptr = argv[i]}};
-        LIST_PUSH(args_list.as_list, nero_copy(arg));
+        LIST_PUSH(args_list, nero_copy(arg));
     }
 
     Nero nero = {0};
@@ -1500,6 +1497,8 @@ int main(int argc, char **argv) {
     nero_init_foreign(&nero);
     global.code = (Block) {0, nero.code.sz};
     nero_call(&nero, global);
-    nero_free(args_list);
+    for (int i = 0; i < args_list.sz; ++i)
+        nero_free(args_list.ptr[i]);
+    LIST_FREE(args_list);
     return 0;
 }
