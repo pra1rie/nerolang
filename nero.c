@@ -132,9 +132,9 @@ static inline char escape(char c) {
     }
 }
 
-static inline Token next_token(FILE *fp) {
+static inline Token next_token(FILE *fp, int file) {
     char c = skip_space(fp);
-    Token tok = {.kind = TK_EOF, .line = line};
+    Token tok = {.kind = TK_EOF, .line = line, .file = file};
     tok.value.alloc = 0;
     if (c == EOF) return tok;
     if (isdigit(c)) {
@@ -203,27 +203,33 @@ end:
 static inline char *errpos(Nero *nr, Token tk);
 
 void tokenize(Nero *nr, String file) {
+    if (!nr->code.alloc) nr->code = (TokenList) LIST_ALLOC(Token);
     if (!files.alloc) files = (StringList) LIST_ALLOC(String);
+    int cur_line = line, cur_file = files.sz;
+    char str[1024] = {0};
+
     for (int f = 0; f < files.sz; ++f) {
         if (STRCMPS(files.ptr[f], file))
             return;
     }
+
     LIST_PUSH(files, file);
-    char str[1024] = {0};
     memcpy(str, file.ptr, file.sz);
     FILE *fp = fopen(str, "r");
     if (!fp) goto fail;
-    if (!nr->code.alloc) nr->code = (TokenList) LIST_ALLOC(Token);
+
+    line = 1;
     Token tok;
     do {
-        tok = next_token(fp);
+        tok = next_token(fp, cur_file);
         if (tok.kind == TK_IMPORT) {
-            tok = next_token(fp);
+            tok = next_token(fp, cur_file);
             if (tok.kind != TK_STRING) {
                 fprintf(stderr, "Error: %s\nExpected string\n", errpos(nr, tok));
                 fclose(fp);
                 exit(1);
             }
+            // lmfao
             tokenize(nr, tok.value);
             // lmfao
             if (nr->code.ptr[nr->code.sz-1].kind == TK_EOF)
@@ -232,7 +238,9 @@ void tokenize(Nero *nr, String file) {
         }
         LIST_PUSH(nr->code, tok);
     } while (tok.kind != TK_EOF);
+
     nr->ip = 0;
+    line = cur_line;
     fclose(fp);
     return;
 fail:
