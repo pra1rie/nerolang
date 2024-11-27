@@ -1065,21 +1065,22 @@ Value exec_dict_key(Nero *nr, Value dict) {
     return val;
 }
 
-void nero_check_bounds(Nero *nr, Value list, int64_t idx) {
+void nero_check_bounds(Nero *nr, Value list, int idx) {
     if (list.type != T_LIST && list.type != T_STRING) {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
         exit(1);
     }
-    int64_t sz = list.type == T_STRING? list.as_str.sz : list.as_list.sz;
-    if (idx < 0 || idx >= sz) {
+
+    int size = list.type == T_STRING? list.as_str.sz : list.as_list.sz;
+    if (idx < 0 || idx >= size) {
         fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, PEEK(0)));
         exit(1);
     }
 }
 
-Value nero_get_index(Nero *nr, Value list, int64_t idx) {
-    Value val;
+Value nero_get_index(Nero *nr, Value list, int idx) {
     nero_check_bounds(nr, list, idx);
+    Value val;
     if (list.type == T_STRING) {
         val = nero_copy((Value){T_STRING, .as_str = {.sz = 1, .ptr = &list.as_str.ptr[idx]}});
         nero_free(list);
@@ -1096,30 +1097,33 @@ Value exec_list_index(Nero *nr, Value list) {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
         exit(1);
     }
+
+    Token tk = PEEK(0);
     if (PEEK(0).kind != TK_LSQUARE) {
         fprintf(stderr, "Error: %s\nMissing '['\n", errpos(nr, PEEK(0)));
         exit(1);
     }
-    Token tk = PEEK(0);
     ADVANCE(1);
     Value index = exec_expr(nr);
+
     if (PEEK(0).kind != TK_RSQUARE) {
         fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
+
     ADVANCE(1);
     if (index.type != T_NUMBER) {
         fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
         exit(1);
     }
 
-    int64_t idx = (int64_t)index.as_num;
+    int idx = (int)index.as_num;
     if (PEEK(0).kind == TK_EQ) {
+        ADVANCE(1);
         if (list.type != T_LIST) {
             fprintf(stderr, "Error: %s\nUnexpected '='\n", errpos(nr, tk));
             exit(1);
         }
-        ADVANCE(1);
 
         nero_check_bounds(nr, list, idx);
         Value val = exec_expr(nr);
