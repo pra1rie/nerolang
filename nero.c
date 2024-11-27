@@ -274,6 +274,7 @@ static inline void nero_free(Value val) {
     if (val.free == V_NOFREE) return;
     if (val.type == T_STRING && val.as_str.alloc) {
         STRFREE(val.as_str);
+        val.as_str.alloc = 0;
     }
     else if (val.type == T_DICT && val.as_dict.alloc) {
         for (int i = 0; i < val.as_dict.sz; ++i) {
@@ -282,6 +283,7 @@ static inline void nero_free(Value val) {
             STRFREE(val.as_dict.ptr[i].name);
         }
         LIST_FREE(val.as_dict);
+        val.as_dict.alloc = 0;
     }
     else if (val.type == T_LIST && val.as_list.alloc) {
         for (int i = 0; i < val.as_list.sz; ++i) {
@@ -289,6 +291,7 @@ static inline void nero_free(Value val) {
             nero_free(val.as_list.ptr[i]);
         }
         LIST_FREE(val.as_list);
+        val.as_list.alloc = 0;
     }
 }
 
@@ -1125,6 +1128,7 @@ Value exec_list_index(Nero *nr, Value list) {
         Value val = exec_expr(nr);
         nero_free(list.as_list.ptr[i]);
         list.as_list.ptr[i] = nero_copy(val);
+        nero_free(list);
         return val;
     }
 
@@ -1208,12 +1212,19 @@ Value exec_compare(Nero *nr) {
         ADVANCE(1);
         Value other = exec_addsub(nr);
         switch (tk.kind) {
-        case TK_EQEQ:
+        case TK_EQEQ: {
+            Value v = val;
             val = nero_equals(val, other);
-            break;
-        case TK_NEQ:
-            val = (Value) {T_BOOL, .as_num = !nero_equals(val, other).as_num};
-            break;
+            nero_free(other);
+            nero_free(v);
+        } break;
+        case TK_NEQ: {
+            Value v = val;
+            val = nero_equals(val, other);
+            val.as_num = !val.as_num;
+            nero_free(other);
+            nero_free(v);
+        } break;
         case TK_LT:
         case TK_GT:
         case TK_LEQ:
@@ -1392,6 +1403,8 @@ Value exec_for(Nero *nr) {
     ADVANCE(1);
     Value iter = exec_expr(nr);
     Block body = parse_block(nr);
+    Value copy = nero_copy(iter);
+    copy.free = V_NOFREE;
 
     if (iter.type != T_STRING && iter.type != T_LIST) {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, var));
@@ -1399,21 +1412,25 @@ Value exec_for(Nero *nr) {
     }
 
     int sz = iter.type == T_STRING? iter.as_str.sz : iter.as_list.sz;
-    for (int i = 0; i < iter.as_list.sz; ++i) {
-        Value val = nero_get_index(nr, iter, i);
+    for (int i = 0; i < sz; ++i) {
+        Value val = nero_get_index(nr, copy, i);
         set_var(&nr->fn->vars, var.value, val);
         if (idx.kind != TK_EOF)
             set_var(&nr->fn->vars, idx.value, (Value){T_NUMBER, .as_num = i});
         nero_free(val);
         nero_free(res);
         res = exec_block(nr, body);
-        if (nr->ret == RET_RETURN) return res;
+        if (nr->ret == RET_RETURN) goto end;
         else if (nr->ret == RET_NEXT) nr->ret = RET_NO;
         else if (nr->ret == RET_BREAK) {
             nr->ret = RET_NO; break;
         }
     }
 
+end:
+    copy.free = V_FREE;
+    nero_free(copy);
+    nero_free(iter);
     nr->ip = body.end+1;
     return res;
 }
