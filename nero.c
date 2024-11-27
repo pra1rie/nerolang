@@ -15,7 +15,8 @@ enum {
     TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
     TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW, TK_DOT,
     // keywords
-    TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT, TK_IMPORT,
+    TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE,
+    TK_WHILE, TK_FOR, TK_BREAK, TK_NEXT, TK_IMPORT,
 };
 
 // XXX: implement pow '**', first-class functions
@@ -30,7 +31,8 @@ const char *ops[] = {
 };
 
 const char *keywords[] = {
-    "def", "return", "if", "elif", "else", "while", "break", "next", "import",
+    "def", "return", "if", "elif", "else",
+    "while", "for", "break", "next", "import",
 };
 
 typedef struct {
@@ -1059,6 +1061,37 @@ Value exec_dict_key(Nero *nr, Value dict) {
     return val;
 }
 
+void nero_check_bounds(Nero *nr, Value list, int idx) {
+    if (list.type != T_LIST && list.type != T_STRING) {
+        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
+        exit(1);
+    }
+    int sz = list.type == T_STRING? list.as_str.sz : list.as_list.sz;
+    if (idx < 0 || idx > sz) {
+        fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, PEEK(0)));
+        exit(1);
+    }
+}
+
+Value nero_get_index(Nero *nr, Value list, int idx) {
+    Value val;
+    nero_check_bounds(nr, list, idx);
+    if (list.type == T_STRING) {
+        val = nero_copy((Value){T_STRING, .as_str = {.sz = 1, .ptr = &list.as_str.ptr[idx]}});
+        nero_free(list);
+        return val;
+    }
+
+    if (list.free == V_NOFREE) {
+        val = list.as_list.ptr[idx];
+        val.free = V_NOFREE;
+        return val;
+    }
+    val = nero_copy(list.as_list.ptr[idx]);
+    nero_free(list);
+    return val;
+}
+
 Value exec_list_index(Nero *nr, Value list) {
     if (list.type != T_LIST && list.type != T_STRING) {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
@@ -1081,20 +1114,13 @@ Value exec_list_index(Nero *nr, Value list) {
         exit(1);
     }
     int64_t i = (int64_t)idx.as_num;
-    if (list.type == T_STRING) {
-        if (i < 0 || i > list.as_str.sz) {
-            fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk));
+    nero_check_bounds(nr, list, i);
+
+    if (PEEK(0).kind == TK_EQ) {
+        if (list.type != T_LIST) {
+            fprintf(stderr, "Error: %s\nUnexpected '='\n", errpos(nr, tk));
             exit(1);
         }
-        Value val = nero_copy((Value){T_STRING, .as_str = {.sz = 1, .ptr = &list.as_str.ptr[i]}});
-        nero_free(list);
-        return val;
-    }
-    if (i < 0 || i > list.as_list.sz) {
-        fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk));
-        exit(1);
-    }
-    if (PEEK(0).kind == TK_EQ) {
         ADVANCE(1);
         Value val = exec_expr(nr);
         nero_free(list.as_list.ptr[i]);
@@ -1102,14 +1128,7 @@ Value exec_list_index(Nero *nr, Value list) {
         return val;
     }
 
-    if (list.free == V_NOFREE) {
-        Value val = list.as_list.ptr[i];
-        val.free = V_NOFREE;
-        return val;
-    }
-    Value val = nero_copy(list.as_list.ptr[i]);
-    nero_free(list);
-    return val;
+    return nero_get_index(nr, list, i);
 }
 
 Value exec_factor(Nero *nr) {
@@ -1347,6 +1366,58 @@ Value exec_while(Nero *nr) {
     return res;
 }
 
+Value exec_for(Nero *nr) {
+    Value res = {T_NIL};
+    ADVANCE(1);
+    Token var = PEEK(0);
+    Token idx = {0};
+    if (var.kind != TK_WORD) {
+        fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, var));
+        exit(1);
+    }
+    ADVANCE(1);
+    if (PEEK(0).kind == TK_COMMA) {
+        ADVANCE(1);
+        idx = PEEK(0);
+        if (idx.kind != TK_WORD) {
+            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, idx));
+            exit(1);
+        }
+        ADVANCE(1);
+    }
+    if (PEEK(0).kind != TK_EQ) {
+        fprintf(stderr, "Error: %s\nExpected '='\n", errpos(nr, var));
+        exit(1);
+    }
+    ADVANCE(1);
+    Value iter = exec_expr(nr);
+    Block body = parse_block(nr);
+
+    if (iter.type != T_STRING && iter.type != T_LIST) {
+        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, var));
+        exit(1);
+    }
+
+    int sz = iter.type == T_STRING? iter.as_str.sz : iter.as_list.sz;
+    for (int i = 0; i < iter.as_list.sz; ++i) {
+        Value val = nero_get_index(nr, iter, i);
+        set_var(&nr->fn->vars, var.value, val);
+        if (idx.kind != TK_EOF)
+            set_var(&nr->fn->vars, idx.value, (Value){T_NUMBER, .as_num = i});
+        nero_free(val);
+        nero_free(res);
+        res = exec_block(nr, body);
+        if (nr->ret == RET_RETURN) return res;
+        else if (nr->ret == RET_NEXT) nr->ret = RET_NO;
+        else if (nr->ret == RET_BREAK) {
+            nr->ret = RET_NO; break;
+        }
+    }
+
+    nr->ip = body.end+1;
+    return res;
+}
+
 Value exec_keyword(Nero *nr) {
     switch (PEEK(0).kind) {
     case TK_DEF:
@@ -1361,6 +1432,8 @@ Value exec_keyword(Nero *nr) {
         return exec_if(nr);
     case TK_WHILE:
         return exec_while(nr);
+    case TK_FOR:
+        return exec_for(nr);
     default:
         fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0)));
         exit(1);
