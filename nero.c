@@ -15,10 +15,10 @@ enum {
     TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
     TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW, TK_DOT,
     // keywords
-    TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT,
+    TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE, TK_WHILE, TK_BREAK, TK_NEXT, TK_IMPORT,
 };
 
-// XXX: implement pow '**', 'import', first-class functions
+// XXX: implement pow '**', first-class functions
 
 #define GLOBAL_SCOPE "<global>"
 #define MAX_CONDITIONS 1024
@@ -30,11 +30,11 @@ const char *ops[] = {
 };
 
 const char *keywords[] = {
-    "def", "return", "if", "elif", "else", "while", "break", "next",
+    "def", "return", "if", "elif", "else", "while", "break", "next", "import",
 };
 
 typedef struct {
-    int kind, line;
+    int kind, line, file;
     String value;
 } Token;
 
@@ -78,7 +78,6 @@ typedef struct Function {
 } Function;
 
 typedef struct {
-    char *file;
     int ip, ret;
     TokenList code;
     VariableList vars;
@@ -90,7 +89,9 @@ typedef struct {
 Value args_list;
 enum { RET_NO, RET_RETURN, RET_BREAK, RET_NEXT };
 
+static StringList files = {.alloc = 0};
 static int line = 1;
+
 static inline char skip_space(FILE *fp) {
     char c = fgetc(fp);
     while (c != EOF && isspace(c)) {
@@ -108,14 +109,6 @@ static inline char skip_space(FILE *fp) {
 static inline int is_operator(char op[2], int sz) {
     for (int i = 0; i < LENGTH(ops); ++i) {
         if (!strncmp(ops[i], op, sz))
-            return 1;
-    }
-    return 0;
-}
-
-static inline int is_keyword(String *s) {
-    for (int i = 0; i < LENGTH(keywords); ++i) {
-        if (STRCMPPP(s, keywords[i]))
             return 1;
     }
     return 0;
@@ -207,14 +200,36 @@ end:
     return tok;
 }
 
-void tokenize(Nero *nr, char *file) {
-    FILE *fp = fopen(file, "r");
+static inline char *errpos(Nero *nr, Token tk);
+
+void tokenize(Nero *nr, String file) {
+    if (!files.alloc) files = (StringList) LIST_ALLOC(String);
+    for (int f = 0; f < files.sz; ++f) {
+        if (STRCMPS(files.ptr[f], file))
+            return;
+    }
+    LIST_PUSH(files, file);
+    char str[1024] = {0};
+    memcpy(str, file.ptr, file.sz);
+    FILE *fp = fopen(str, "r");
     if (!fp) goto fail;
-    if (!nr->file) nr->file = file;
     if (!nr->code.alloc) nr->code = (TokenList) LIST_ALLOC(Token);
     Token tok;
     do {
         tok = next_token(fp);
+        if (tok.kind == TK_IMPORT) {
+            tok = next_token(fp);
+            if (tok.kind != TK_STRING) {
+                fprintf(stderr, "Error: %s\nExpected string\n", errpos(nr, tok));
+                fclose(fp);
+                exit(1);
+            }
+            tokenize(nr, tok.value);
+            // lmfao
+            if (nr->code.ptr[nr->code.sz-1].kind == TK_EOF)
+                LIST_POP(nr->code);
+            continue;
+        }
         LIST_PUSH(nr->code, tok);
     } while (tok.kind != TK_EOF);
     nr->ip = 0;
@@ -222,7 +237,7 @@ void tokenize(Nero *nr, char *file) {
     return;
 fail:
     if (fp) fclose(fp);
-    fprintf(stderr, "Error: Could not open file '%s'\n", file);
+    fprintf(stderr, "Error: Could not open file '%.*s'\n", file.sz, file.ptr);
     exit(1);
 }
 
@@ -237,10 +252,11 @@ void set_var(VariableList *vars, String name, Value val);
 Value get_var(VariableList *vars, String name);
 Value nero_dict_keys(int argc, Value *argv);
 
-static inline char *errpos(Nero *nr, int ln) {
+static inline char *errpos(Nero *nr, Token tk) {
     char err[1024];
-    sprintf(err, "(file \"%s\", line %d, in \"%.*s\")",
-        nr->file, ln, nr->fn->name.sz, nr->fn->name.ptr);
+    String fn = nr->fn->name, fl = files.ptr[tk.file];
+    sprintf(err, "(file \"%.*s\", line %d, in \"%.*s\")",
+        fl.sz, fl.ptr, tk.line, fn.sz, fn.ptr);
     return err;
 }
 
@@ -794,13 +810,13 @@ Value exec_dict(Nero *nr) {
         ADVANCE(1); // '{' | ','
         if (PEEK(0).kind == TK_RBRACK) break;
         if (PEEK(0).kind != TK_WORD) {
-            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0).line));
+            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0)));
             exit(1);
         }
         String key = nero_copy((Value) {T_STRING, .as_str = PEEK(0).value}).as_str;
         ADVANCE(1);
         if (PEEK(0).kind != TK_EQ) {
-            fprintf(stderr, "Error: %s\nMissing '='\n", errpos(nr, PEEK(0).line));
+            fprintf(stderr, "Error: %s\nMissing '='\n", errpos(nr, PEEK(0)));
             exit(1);
         }
         ADVANCE(1);
@@ -809,7 +825,7 @@ Value exec_dict(Nero *nr) {
         nero_free(v);
     } while (PEEK(0).kind == TK_COMMA);
     if (PEEK(0).kind != TK_RBRACK) {
-        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
@@ -826,7 +842,7 @@ Value exec_list(Nero *nr) {
         nero_free(v);
     } while (PEEK(0).kind == TK_COMMA);
     if (PEEK(0).kind != TK_RSQUARE) {
-        fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
@@ -853,7 +869,7 @@ static Value call_foreign(Nero *nr, Token tok, Value args) {
         }
     }
     fprintf(stderr, "Error: %s\nUndefined function '%.*s'\n",
-        errpos(nr, tok.line), tok.value.sz, tok.value.ptr);
+        errpos(nr, tok), tok.value.sz, tok.value.ptr);
     exit(1);
 }
 
@@ -870,7 +886,7 @@ Value exec_call(Nero *nr) {
     } while (PEEK(0).kind == TK_COMMA);
 
     if (PEEK(0).kind != TK_RPAREN) {
-        fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
@@ -879,7 +895,7 @@ Value exec_call(Nero *nr) {
         return call_foreign(nr, tok, args);
     if (fn.vars.sz != args.as_list.sz) {
         fprintf(stderr, "Error: %s\nFunction '%.*s' expects %d argument(s), got %d\n",
-            errpos(nr, tok.line), tok.value.sz, tok.value.ptr, fn.vars.sz, args.as_list.sz);
+            errpos(nr, tok), tok.value.sz, tok.value.ptr, fn.vars.sz, args.as_list.sz);
         exit(1);
     }
     VariableList vars = fn.vars, copy = copy_vars(&fn.vars);
@@ -897,7 +913,7 @@ Block parse_block(Nero *nr) {
     Block blk;
     int id = 0;
     if (PEEK(0).kind != TK_LBRACK) {
-        fprintf(stderr, "Error: %s\nExpected '{'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nExpected '{'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
@@ -911,7 +927,7 @@ Block parse_block(Nero *nr) {
     }
 
     if (PEEK(0).kind != TK_RBRACK) {
-        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     blk.end = nr->ip;
@@ -932,7 +948,7 @@ Value exec_variable(Nero *nr) {
         res = get_var(&nr->vars, var.value);
     if (res.type == T_BOOL && res.as_num == -1) {
         fprintf(stderr, "Error: %s\nUndefined variable '%.*s'\n",
-            errpos(nr, var.line), var.value.sz, var.value.ptr);
+            errpos(nr, var), var.value.sz, var.value.ptr);
         exit(1);
     }
     return res;
@@ -960,11 +976,11 @@ Value exec_term(Nero *nr) {
         ADVANCE(1);
         return (Value) {T_BOOL, .as_num = 1};
     case TK_MINUS: {
-        int line = PEEK(0).line;
+        Token tk = PEEK(0);
         ADVANCE(1);
         Value ret = exec_expr(nr);
         if (ret.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, line));
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
             exit(1);
         }
         return (Value) {T_NUMBER, .as_num = -ret.as_num};
@@ -974,35 +990,35 @@ Value exec_term(Nero *nr) {
         return (Value) {T_BOOL, .as_num = !nero_true(exec_expr(nr))};
     }
     case TK_LPAREN: {
-        int line = PEEK(0).line;
+        Token tk = PEEK(0);
         ADVANCE(1);
         Value ret = exec_expr(nr);
         if (PEEK(0).kind != TK_RPAREN) {
-            fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, line));
+            fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, tk));
             exit(1);
         }
         ADVANCE(1);
         return ret;
     }
     default:
-        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0)));
         exit(1);
     }
 }
 
 Value exec_dict_key(Nero *nr, Value dict) {
     if (dict.type != T_DICT) {
-        fprintf(stderr, "Error: %s\nExpected dict\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nExpected dict\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     if (PEEK(0).kind != TK_DOT) {
-        fprintf(stderr, "Error: %s\nMissing '.'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing '.'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
     Token tok = PEEK(0);
     if (tok.kind != TK_WORD && tok.kind != TK_STRING) {
-        fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, tok.line));
+        fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, tok));
         exit(1);
     }
     String key = nero_copy((Value) {T_STRING, .as_str = tok.value}).as_str;
@@ -1022,7 +1038,7 @@ Value exec_dict_key(Nero *nr, Value dict) {
     STRFREE(key);
     if (val.type == T_BOOL && val.as_num == -1) {
         fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
-            errpos(nr, tok.line), key.sz, key.ptr);
+            errpos(nr, tok), key.sz, key.ptr);
         exit(1);
     }
 
@@ -1037,29 +1053,29 @@ Value exec_dict_key(Nero *nr, Value dict) {
 
 Value exec_list_index(Nero *nr, Value list) {
     if (list.type != T_LIST && list.type != T_STRING) {
-        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     if (PEEK(0).kind != TK_LSQUARE) {
-        fprintf(stderr, "Error: %s\nMissing '['\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing '['\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     Token tk = PEEK(0);
     ADVANCE(1);
     Value idx = exec_expr(nr);
     if (PEEK(0).kind != TK_RSQUARE) {
-        fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
     if (idx.type != T_NUMBER) {
-        fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk.line));
+        fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
         exit(1);
     }
     int64_t i = (int64_t)idx.as_num;
     if (list.type == T_STRING) {
         if (i < 0 || i > list.as_str.sz) {
-            fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk));
             exit(1);
         }
         Value val = nero_copy((Value){T_STRING, .as_str = {.sz = 1, .ptr = &list.as_str.ptr[i]}});
@@ -1067,7 +1083,7 @@ Value exec_list_index(Nero *nr, Value list) {
         return val;
     }
     if (i < 0 || i > list.as_list.sz) {
-        fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk.line));
+        fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, tk));
         exit(1);
     }
     if (PEEK(0).kind == TK_EQ) {
@@ -1105,7 +1121,7 @@ Value exec_muldiv(Nero *nr) {
         ADVANCE(1);
         Value other = exec_factor(nr);
         if (other.type != T_NUMBER || val.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
             exit(1);
         }
         switch (tk.kind) {
@@ -1121,14 +1137,14 @@ Value exec_muldiv(Nero *nr) {
             val.as_num = ((int)val.as_num) % ((int)other.as_num);
             break;
         default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
             exit(1);
         }
         tk = PEEK(0);
     }
     return val;
 divbyzero:
-    fprintf(stderr, "Error: %s\nDivision by zero\n", errpos(nr, tk.line));
+    fprintf(stderr, "Error: %s\nDivision by zero\n", errpos(nr, tk));
     exit(1);
 }
 
@@ -1139,7 +1155,7 @@ Value exec_addsub(Nero *nr) {
         ADVANCE(1);
         Value other = exec_muldiv(nr);
         if (other.type != T_NUMBER || val.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
             exit(1);
         }
         switch (tk.kind) {
@@ -1150,7 +1166,7 @@ Value exec_addsub(Nero *nr) {
             val.as_num -= other.as_num;
             break;
         default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
             exit(1);
         }
         tk = PEEK(0);
@@ -1176,12 +1192,12 @@ Value exec_compare(Nero *nr) {
         case TK_LEQ:
         case TK_GEQ:
             if (val.type != T_NUMBER || other.type != T_NUMBER) {
-                fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk.line));
+                fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
                 exit(1);
             }
             return nero_compare(val, other, tk.kind);
         default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
             exit(1);
         }
     }
@@ -1202,7 +1218,7 @@ Value exec_andor(Nero *nr) {
             val = (Value) {T_BOOL, .as_num = nero_true(val) || nero_true(other)};
             break;
         default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk.line));
+            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
             exit(1);
         }
         tk = PEEK(0);
@@ -1214,12 +1230,12 @@ Value exec_def(Nero *nr) {
     ADVANCE(1);
     Token name = PEEK(0);
     if (name.kind != TK_WORD) {
-        fprintf(stderr, "Error: %s\nExpected function name\n", errpos(nr, name.line));
+        fprintf(stderr, "Error: %s\nExpected function name\n", errpos(nr, name));
         exit(1);
     }
     ADVANCE(1);
     if (PEEK(0).kind != TK_LPAREN) {
-        fprintf(stderr, "Error: %s\nMissing '('\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing '('\n", errpos(nr, PEEK(0)));
         exit(1);
     }
 
@@ -1228,7 +1244,7 @@ Value exec_def(Nero *nr) {
         ADVANCE(1); // '(' | ','
         if (PEEK(0).kind == TK_RPAREN) break;
         if (PEEK(0).kind != TK_WORD) {
-            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0).line));
+            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0)));
             exit(1);
         }
         String arg = PEEK(0).value;
@@ -1237,7 +1253,7 @@ Value exec_def(Nero *nr) {
     } while (PEEK(0).kind == TK_COMMA);
 
     if (PEEK(0).kind != TK_RPAREN) {
-        fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
@@ -1338,7 +1354,7 @@ Value exec_keyword(Nero *nr) {
     case TK_WHILE:
         return exec_while(nr);
     default:
-        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0).line));
+        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0)));
         exit(1);
     }
 }
@@ -1377,12 +1393,14 @@ int main(int argc, char **argv) {
     }
 
     Nero nero = {0};
-    tokenize(&nero, argv[1]);
-    nero_init_foreign(&nero);
+    String file = {.sz = strlen(argv[1]), .ptr = argv[1]};
     Function global = {
         .name = {.alloc = 0, .sz = 8, .ptr = "<global>"},
-        .code = {0, nero.code.sz},
     };
+    nero.fn = &global;
+    tokenize(&nero, file);
+    nero_init_foreign(&nero);
+    global.code = (Block) {0, nero.code.sz};
     nero_call(&nero, global);
     nero_free(args_list);
     return 0;

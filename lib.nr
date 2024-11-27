@@ -1,0 +1,8 @@
+def string_to_number(str) {
+    num = i = 0
+    while (i = i + 1) <= len(str) {
+        num = num * 10 + (ord(str[i-1]) - ord("0"))
+    }
+    return num
+}
+
