@@ -1087,6 +1087,11 @@ Value nero_get_index(Nero *nr, Value list, int idx) {
         return val;
     }
 
+    if (list.free == V_NOFREE) {
+        val = list.as_list.ptr[idx];
+        val.free = V_NOFREE;
+        return val;
+    }
     val = nero_copy(list.as_list.ptr[idx]);
     nero_free(list);
     return val;
