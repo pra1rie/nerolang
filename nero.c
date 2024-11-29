@@ -1411,18 +1411,30 @@ Value exec_for(Nero *nr) {
     Block body = parse_block(nr);
     Value copy = nero_copy(iter);
     copy.free = V_NOFREE;
+    int sz;
 
-    if (iter.type != T_STRING && iter.type != T_LIST) {
+    if (iter.type == T_STRING || iter.type == T_LIST) {
+        sz = iter.type == T_STRING? iter.as_str.sz : iter.as_list.sz;
+    }
+    else if (iter.type == T_NUMBER) {
+        if (idx.kind != TK_EOF) {
+            fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, var));
+            exit(1);
+        }
+        sz = (int)iter.as_num;
+    }
+    else {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, var));
         exit(1);
     }
 
-    int sz = iter.type == T_STRING? iter.as_str.sz : iter.as_list.sz;
+    Value val;
     for (int i = 0; i < sz; ++i) {
-        Value val = nero_get_index(nr, copy, i);
+        Value index = (Value){T_NUMBER, .as_num = i};
+        val = (copy.type == T_NUMBER)? index : nero_get_index(nr, copy, i);
         set_var(&nr->fn->vars, var.value, val);
         if (idx.kind != TK_EOF)
-            set_var(&nr->fn->vars, idx.value, (Value){T_NUMBER, .as_num = i});
+            set_var(&nr->fn->vars, idx.value, index);
         nero_free(val);
         nero_free(res);
         res = exec_block(nr, body);
