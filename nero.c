@@ -454,7 +454,9 @@ Value nero_copy(Value val) {
 // #define EXPECT(exp) if (argc != exp) { fprintf(stderr, "Error: expected %d argument(s), got %d\n", exp, argc); exit(1); }
 #define SIMPLE_ERROR(...) { fprintf(stderr, "Error: "__VA_ARGS__); exit(1); }
 #define EXPECT(N) if (argc != N) { SIMPLE_ERROR("expected %d argument(s), got %d\n", N, argc); }
-#define EXPECT_TYPE(A, T) if (A.type != T) { SIMPLE_ERROR("expected %.*s, got %.*s\n", type_to_string(T), type_to_string(A.type)); }
+#define EXPECT_TYPE(A, T) if (A.type != T) {\
+    String _exp = type_to_string(T), _got = type_to_string(A.type); \
+    SIMPLE_ERROR("expected %.*s, got %.*s\n", _exp.sz, _exp.ptr, _got.sz, _got.ptr); }
 
 static inline String type_to_string(uint8_t type) {
     String str = STRALLOC();
