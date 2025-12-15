@@ -60,7 +60,7 @@ typedef struct Value {
         double as_num;
         String as_str;
         ValueList as_list;
-        VariableList as_dict;
+        VariableList *as_dict;
     };
 } Value;
 
@@ -276,14 +276,14 @@ static inline void nero_free(Value val) {
         STRFREE(val.as_str);
         val.as_str.alloc = 0;
     }
-    else if (val.type == T_DICT && val.as_dict.alloc) {
-        for (int i = 0; i < val.as_dict.sz; ++i) {
-            val.as_dict.ptr[i].value.free = V_FREE;
-            nero_free(val.as_dict.ptr[i].value);
-            STRFREE(val.as_dict.ptr[i].name);
+    else if (val.type == T_DICT && val.as_dict->alloc) {
+        for (int i = 0; i < val.as_dict->sz; ++i) {
+            val.as_dict->ptr[i].value.free = V_FREE;
+            nero_free(val.as_dict->ptr[i].value);
+            STRFREE(val.as_dict->ptr[i].name);
         }
-        LIST_FREE(val.as_dict);
-        val.as_dict.alloc = 0;
+        LIST_FREEP(val.as_dict);
+        free(val.as_dict);
     }
     else if (val.type == T_LIST && val.as_list.alloc) {
         for (int i = 0; i < val.as_list.sz; ++i) {
@@ -324,11 +324,11 @@ Value nero_string(Value val) {
         break;
     case T_DICT:
         strcatp(&str, "{");
-        for (int i = 0; i < val.as_dict.sz; ++i) {
+        for (int i = 0; i < val.as_dict->sz; ++i) {
             if (i > 0) strcatp(&str, ", ");
-            strcats(&str, &val.as_dict.ptr[i].name);
+            strcats(&str, &val.as_dict->ptr[i].name);
             strcatp(&str, " = ");
-            Value v = nero_string(val.as_dict.ptr[i].value);
+            Value v = nero_string(val.as_dict->ptr[i].value);
             strcats(&str, &v.as_str);
             nero_free(v);
         }
@@ -390,7 +390,7 @@ Value nero_equals(Value a, Value b) {
         Value keys = nero_dict_keys(1, &a);
         for (int i = 0; i < keys.as_list.sz; ++i) {
             String key = keys.as_list.ptr[i].as_str;
-            if (!nero_equals(get_var(&a.as_dict, key), get_var(&b.as_dict, key)).as_num) {
+            if (!nero_equals(get_var(a.as_dict, key), get_var(b.as_dict, key)).as_num) {
                 res.as_num = 0;
                 break;
             }
@@ -441,10 +441,11 @@ Value nero_copy(Value val) {
             LIST_PUSH(res.as_list, nero_copy(val.as_list.ptr[i]));
         break;
     case T_DICT:
-        res.as_dict = (VariableList) LIST_ALLOCN(Variable, val.as_dict.alloc);
-        for (int i = 0; i < val.as_dict.sz; ++i) {
-            Value s = nero_copy((Value){T_STRING, .as_str = val.as_dict.ptr[i].name});
-            set_var(&res.as_dict, s.as_str, val.as_dict.ptr[i].value);
+        res.as_dict = malloc(sizeof(VariableList));
+        *res.as_dict = (VariableList) LIST_ALLOCN(Variable, val.as_dict->alloc);
+        for (int i = 0; i < val.as_dict->sz; ++i) {
+            Value s = nero_copy((Value){T_STRING, .as_str = val.as_dict->ptr[i].name});
+            set_var(res.as_dict, s.as_str, val.as_dict->ptr[i].value);
         }
         break;
     }
@@ -550,8 +551,8 @@ Value nero_dict_keys(int argc, Value *argv) {
     EXPECT(1);
     EXPECT_TYPE(argv[0], T_DICT);
     Value keys = {T_LIST, .free = V_FREE, .as_list = (ValueList) LIST_ALLOC(Value)};
-    for (int i = 0; i < argv[0].as_dict.sz; ++i) {
-        Value key = nero_copy((Value){T_STRING, .as_str = argv[0].as_dict.ptr[i].name});
+    for (int i = 0; i < argv[0].as_dict->sz; ++i) {
+        Value key = nero_copy((Value){T_STRING, .as_str = argv[0].as_dict->ptr[i].name});
         LIST_PUSH(keys.as_list, key);
     }
 
@@ -821,7 +822,9 @@ Value exec_string(Nero *nr) {
 }
 
 Value exec_dict(Nero *nr) {
-    Value val = {T_DICT, .free = V_FREE, .as_dict = (VariableList) LIST_ALLOC(Variable)};
+    VariableList *dict = malloc(sizeof(VariableList));
+    *dict = (VariableList) LIST_ALLOC(Variable);
+    Value val = {T_DICT, .free = V_FREE, .as_dict = dict};
     do {
         ADVANCE(1); // '{' | ','
         if (PEEK(0).kind == TK_RBRACK) break;
@@ -837,7 +840,7 @@ Value exec_dict(Nero *nr) {
         }
         ADVANCE(1);
         Value v = exec_expr(nr);
-        set_var(&val.as_dict, key, v);
+        set_var(val.as_dict, key, v);
         nero_free(v);
     } while (PEEK(0).kind == TK_COMMA);
     if (PEEK(0).kind != TK_RBRACK) {
@@ -1040,17 +1043,16 @@ Value exec_dict_key(Nero *nr, Value dict) {
     String key = nero_copy((Value) {T_STRING, .as_str = tok.value}).as_str;
     ADVANCE(1);
 
-    // XXX: add new keys to dict with '=' (idk why it not working)
     if (PEEK(0).kind == TK_EQ) {
         ADVANCE(1);
         Value val = exec_expr(nr);
-        int idx = dict_get_index(&dict.as_dict, key);
-        set_var(&dict.as_dict, key, val);
+        int idx = dict_get_index(dict.as_dict, key);
+        set_var(dict.as_dict, key, val);
         if (idx != -1) STRFREE(key);
         return val;
     }
 
-    Value val = get_var(&dict.as_dict, key);
+    Value val = get_var(dict.as_dict, key);
     STRFREE(key);
     if (val.type == T_BOOL && val.as_num == -1) {
         fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
