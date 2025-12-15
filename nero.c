@@ -297,7 +297,7 @@ static inline void nero_free(Value val) {
     }
 }
 
-Value nero_string(Value val) {
+Value nero_string(Value val, int escape) {
     String str = STRALLOC();
     char num[100];
     switch (val.type) {
@@ -312,13 +312,15 @@ Value nero_string(Value val) {
         strcatp(&str, num);
         break;
     case T_STRING:
+        if (escape) strcatp(&str, "\"");
         strcats(&str, &val.as_str);
+        if (escape) strcatp(&str, "\"");
         break;
     case T_LIST:
         strcatp(&str, "[");
         for (int i = 0; i < val.as_list.sz; ++i) {
             if (i > 0) strcatp(&str, ", ");
-            Value v = nero_string(val.as_list.ptr[i]);
+            Value v = nero_string(val.as_list.ptr[i], 1);
             strcats(&str, &v.as_str);
             nero_free(v);
         }
@@ -327,10 +329,10 @@ Value nero_string(Value val) {
     case T_DICT:
         strcatp(&str, "{");
         for (int i = 0; i < val.as_dict->sz; ++i) {
-            if (i > 0) strcatp(&str, ", ");
+            if (i > 0) strcatp(&str, ", \"");
             strcats(&str, &val.as_dict->ptr[i].name);
-            strcatp(&str, " = ");
-            Value v = nero_string(val.as_dict->ptr[i].value);
+            strcatp(&str, "\" = ");
+            Value v = nero_string(val.as_dict->ptr[i].value, 1);
             strcats(&str, &v.as_str);
             nero_free(v);
         }
@@ -343,8 +345,8 @@ Value nero_string(Value val) {
     return (Value) {T_STRING, .free = V_FREE, .as_str = str};
 }
 
-void nero_print(Value val) {
-    Value str = nero_string(val);
+void nero_print(Value val, int escape) {
+    Value str = nero_string(val, escape);
     fprintf(stdout, "%.*s", str.as_str.sz, str.as_str.ptr);
     nero_free(str);
 }
@@ -496,7 +498,7 @@ Value nero_typeof(int argc, Value *argv) {
 Value nero_stringfy(int argc, Value *argv) {
     Value str = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
     for (int i = 0; i < argc; ++i) {
-        Value s = nero_string(argv[i]);
+        Value s = nero_string(argv[i], 0);
         strcats(&str.as_str, &s.as_str);
         nero_free(s);
     }
@@ -504,13 +506,13 @@ Value nero_stringfy(int argc, Value *argv) {
 }
 
 Value nero_echo(int argc, Value *argv) {
-    for (int i = 0; i < argc; ++i) nero_print(argv[i]);
+    for (int i = 0; i < argc; ++i) nero_print(argv[i], 0);
     fprintf(stdout, "\n");
     return (Value) {T_NIL};
 }
 
 Value nero_read(int argc, Value *argv) {
-    for (int i = 0; i < argc; ++i) nero_print(argv[i]);
+    for (int i = 0; i < argc; ++i) nero_print(argv[i], 0);
     char *l = NULL; size_t n = 0;
     getline(&l, &n, stdin);
     String str = STRALLOC();
@@ -564,7 +566,7 @@ Value nero_dict_keys(int argc, Value *argv) {
 Value nero_push(int argc, Value *argv) {
     EXPECT(2);
     if (argv[0].type == T_STRING) {
-        Value s = nero_string(argv[1]);
+        Value s = nero_string(argv[1], 0);
         strcats(&argv[0].as_str, &s.as_str);
         nero_free(s);
         return nero_copy(argv[0]);
@@ -617,7 +619,7 @@ Value nero_ord(int argc, Value *argv) {
 
 Value nero_system(int argc, Value *argv) {
     EXPECT(1);
-    Value str = nero_string(argv[0]);
+    Value str = nero_string(argv[0], 0);
     char cmd[str.as_str.sz];
     sprintf(cmd, "%.*s", str.as_str.sz, str.as_str.ptr);
     nero_free(str);
@@ -632,7 +634,7 @@ Value nero_write_file(int argc, Value *argv) {
     FILE *fp = fopen(file, "w+");
     if (!fp)
         SIMPLE_ERROR("Could not write file '%s'\n", file);
-    Value str = nero_string(argv[1]);
+    Value str = nero_string(argv[1], 0);
     fwrite(str.as_str.ptr, sizeof(char), str.as_str.sz, fp);
     nero_free(str);
     fclose(fp);
