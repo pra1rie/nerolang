@@ -20,6 +20,7 @@ enum {
 };
 
 // XXX: implement pow '**', first-class functions
+// XXX: some way to call more foreign functions at runtime
 
 #define GLOBAL_SCOPE "<global>"
 #define MAX_CONDITIONS 1024
@@ -108,7 +109,7 @@ static inline char skip_space(FILE *fp) {
     return c;
 }
 
-static inline int is_operator(char op[2], int sz) {
+static inline int is_operator(char *op, int sz) {
     for (int i = 0; i < LENGTH(ops); ++i) {
         if (!strncmp(ops[i], op, sz))
             return 1;
@@ -147,7 +148,8 @@ static inline Token next_token(FILE *fp, int file) {
         }
         goto end;
     }
-    if (c == '\"') {
+    if (c == '\"' || c == '\'') {
+        char match = c;
         tok.kind = TK_STRING;
         tok.value = STRALLOC();
         do {
@@ -157,7 +159,7 @@ static inline Token next_token(FILE *fp, int file) {
             } else {
                 LIST_PUSH(tok.value, c);
             }
-        } while (c != EOF && c != '\"');
+        } while (c != EOF && c != match);
         LIST_POP(tok.value); // remove last '\"'
         return tok; // don't unget last '\"'
     }
@@ -267,7 +269,7 @@ static inline char *errpos(Nero *nr, Token tk) {
     String fn = nr->fn->name, fl = files.ptr[tk.file];
     sprintf(err, "(file \"%.*s\", line %d, in \"%.*s\")",
         fl.sz, fl.ptr, tk.line, fn.sz, fn.ptr);
-    return err;
+    return strdup(err);
 }
 
 static inline void nero_free(Value val) {
@@ -528,7 +530,7 @@ Value nero_dict_set(int argc, Value *argv) {
     EXPECT(3);
     EXPECT_TYPE(argv[0], T_DICT);
     EXPECT_TYPE(argv[1], T_STRING);
-    VariableList *dict = &argv[0].as_dict;
+    VariableList *dict = argv[0].as_dict;
     int idx = dict_get_index(dict, argv[1].as_str);
     String key = nero_copy(argv[1]).as_str;
     set_var(dict, key, argv[2]);
@@ -541,7 +543,7 @@ Value nero_dict_get(int argc, Value *argv) {
     EXPECT_TYPE(argv[0], T_DICT);
     EXPECT_TYPE(argv[1], T_STRING);
     String key = argv[1].as_str;
-    Value val = get_var(&argv[0].as_dict, key);
+    Value val = get_var(argv[0].as_dict, key);
     if (val.type == T_BOOL && val.as_num == -1)
         SIMPLE_ERROR("Dict has no key '%.*s'\n", key.sz, key.ptr);
     return nero_copy(val);
@@ -648,7 +650,7 @@ Value nero_read_file(int argc, Value *argv) {
     if (!fp)
         SIMPLE_ERROR("Could not read file '%s'\n", file);
     fseek(fp, 0, SEEK_END);
-    if (sz = ftell(fp)) text = STRALLOCN(sz);
+    if ((sz = ftell(fp))) text = STRALLOCN(sz);
     fseek(fp, 0, SEEK_SET);
     if (fread(text.ptr, sizeof(char), sz, fp) != sz)
         SIMPLE_ERROR("Failed to read file '%s'\n", file);
