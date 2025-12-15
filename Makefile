@@ -1,5 +1,11 @@
+CC = tcc
+
 all:
-	tcc -O2 *.c -o nero
+	${CC} -O2 *.c -o nero
 
 install: all
-	install nero /usr/local/bin
+	install -s nero /usr/local/bin
+
+uninstall: # why would u wanna do that? :c
+	rm /usr/local/bin/nero
+
