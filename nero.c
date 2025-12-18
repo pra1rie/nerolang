@@ -233,9 +233,7 @@ void tokenize(Nero *nr, String file) {
                 fclose(fp);
                 exit(1);
             }
-            // lmfao
             tokenize(nr, tok.value);
-            // lmfao
             if (nr->code.ptr[nr->code.sz-1].kind == TK_EOF)
                 LIST_POP(nr->code);
             continue;
@@ -278,7 +276,7 @@ static inline void nero_free(Value val) {
         STRFREE(val.as_str);
         val.as_str.alloc = 0;
     }
-    else if (val.type == T_DICT && val.as_dict->alloc) {
+    else if (val.type == T_DICT && val.as_dict) {
         for (int i = 0; i < val.as_dict->sz; ++i) {
             val.as_dict->ptr[i].value.free = V_FREE;
             nero_free(val.as_dict->ptr[i].value);
@@ -286,6 +284,7 @@ static inline void nero_free(Value val) {
         }
         LIST_FREEP(val.as_dict);
         free(val.as_dict);
+        val.as_dict = NULL;
     }
     else if (val.type == T_LIST && val.as_list.alloc) {
         for (int i = 0; i < val.as_list.sz; ++i) {
@@ -329,7 +328,8 @@ Value nero_string(Value val, int escape) {
     case T_DICT:
         strcatp(&str, "{");
         for (int i = 0; i < val.as_dict->sz; ++i) {
-            if (i > 0) strcatp(&str, ", \"");
+            if (i > 0) strcatp(&str, ", ");
+            strcatp(&str, "\"");
             strcats(&str, &val.as_dict->ptr[i].name);
             strcatp(&str, "\" = ");
             Value v = nero_string(val.as_dict->ptr[i].value, 1);
@@ -681,7 +681,7 @@ Value nero_split(int argc, Value *argv) {
     EXPECT_TYPE(argv[0], T_STRING);
     EXPECT_TYPE(argv[1], T_LIST);
 
-    Value list = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    Value list = {T_LIST, .free = V_FREE, .as_list = (ValueList) LIST_ALLOC(Value)};
     Value tok = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
     for (int i = 0; i < argv[0].as_str.sz; ++i) {
         char ch = argv[0].as_str.ptr[i];
@@ -713,7 +713,7 @@ Value nero_trim(int argc, Value *argv) {
         return str;
     }
     EXPECT_TYPE(argv[0], T_LIST);
-    Value list = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    Value list = {T_LIST, .free = V_FREE, .as_list = (ValueList) LIST_ALLOC(Value)};
     for (int i = 0; i < argv[0].as_list.sz; ++i) {
         Value args[2] = {argv[1], argv[0].as_list.ptr[i]};
         if (!nero_contains(2, args).as_num)
@@ -899,7 +899,7 @@ static Value call_foreign(Nero *nr, Token tok, Value args) {
 Value exec_call(Nero *nr) {
     Token tok = PEEK(0);
     ADVANCE(1);
-    Value args = {T_LIST, .free = V_FREE, .as_list = LIST_ALLOC(Value)};
+    Value args = {T_LIST, .free = V_FREE, .as_list = (ValueList) LIST_ALLOC(Value)};
     do {
         ADVANCE(1); // '(' | ','
         if (PEEK(0).kind == TK_RPAREN) break;
@@ -1057,12 +1057,12 @@ Value exec_dict_key(Nero *nr, Value dict) {
     }
 
     Value val = get_var(dict.as_dict, key);
-    STRFREE(key);
     if (val.type == T_BOOL && val.as_num == -1) {
         fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
             errpos(nr, tok), key.sz, key.ptr);
         exit(1);
     }
+    STRFREE(key);
 
     if (dict.free == V_NOFREE) {
         val.free = V_NOFREE;
