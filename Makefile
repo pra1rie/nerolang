@@ -1,7 +1,7 @@
 CC = tcc
 
 all:
-	${CC} -O2 *.c -o nero
+	${CC} -O2 *.c -o nero -Wall -Werror
 
 install: all
 	install -s nero /usr/local/bin
