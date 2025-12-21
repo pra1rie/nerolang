@@ -1001,7 +1001,7 @@ Value exec_term(Nero *nr) {
     case TK_MINUS: {
         Token tk = PEEK(0);
         ADVANCE(1);
-        Value ret = exec_expr(nr);
+        Value ret = exec_term(nr);
         if (ret.type != T_NUMBER) {
             fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
             exit(1);
@@ -1010,7 +1010,7 @@ Value exec_term(Nero *nr) {
     }
     case TK_NOT: {
         ADVANCE(1);
-        return (Value) {T_BOOL, .as_num = !nero_true(exec_expr(nr))};
+        return (Value) {T_BOOL, .as_num = !nero_true(exec_term(nr))};
     }
     case TK_LPAREN: {
         Token tk = PEEK(0);
