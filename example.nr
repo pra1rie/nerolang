@@ -1,4 +1,3 @@
-
 # this is just the example from the README.
 
 def string_to_number(str) {
@@ -37,8 +36,8 @@ dict = {
 
 dict.list = push(dict.list, "some text")
 
-# dictionary keys can only be strings and may be accessed by dict.key or dict."key"
-for value, i = dict."list" {
+# dictionary keys can only be strings and may be accessed by dict.key, dict."key" or dict["key"]
+for value, i = dict["list"] {
     echo("list[", i, "] = ", value)
 }
 
