@@ -137,17 +137,15 @@ These operators:
 
 And these builtin functions:
 ```
-arguments  chr     contains  dict_get   dict_keys
-dict_set   echo    exit      len        ord
-pop        push    read      read_file  split
-string     system  trim      typeof     write_file
+arguments   chr      contains   echo     exit         keys
+len         ord      pop        push     read         read_file
+split       string   system     typeof   write_file
 ```
 
 ## Example code
 
 There still isn't much to show:
 ```
-
 # this version has comments!
 
 def string_to_number(str) {
@@ -186,17 +184,17 @@ dict = {
 
 dict.list = push(dict.list, "some text")
 
-# dictionary keys can only be strings and may be accessed by dict.key or dict."key"
-for value, i = dict."list" {
+# dictionary keys can only be strings and may be accessed by dict.key, dict."key" or dict["key"]
+for value, i = dict["list"] {
     echo("list[", i, "] = ", value)
 }
 
 echo(dict)
-
 ```
 
 ## Known issues
 
 The most annoying ones i can remember from the top of my head are:
-* It's too goddamn slow (i implemented it using the same method as the original version, by tokenizing the input text and executing it token by token, which is really not ideal).
+* It's too goddamn slow (i implemented it using the same method as the original version, by tokenizing the input text and executing it token by token, which is pretty dumb).
 * Memory management is too naive (there is no GC, and the way i handle it is so bizarre, it's almost a ref counter, but not really. i honestly don't even know what that's supposed to be).
+* Modifying dicts/lists passed functions doesn't work properly because the interpreter always copies the values and NEVER passes by reference.
