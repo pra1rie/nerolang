@@ -260,7 +260,7 @@ Value exec_block(Nero *nr, Block blk);
 static inline void free_vars(VariableList *vars);
 void set_var(VariableList *vars, String name, Value val);
 Value get_var(VariableList *vars, String name);
-Value nero_dict_keys(int argc, Value *argv);
+Value nero_keys(int argc, Value *argv);
 
 static inline char *errpos(Nero *nr, Token tk) {
     char err[1024];
@@ -368,6 +368,8 @@ int nero_true(Value v) {
         return v.as_str.sz;
     case T_LIST:
         return v.as_list->sz;
+    case T_DICT:
+        return v.as_dict->sz;
     default:
         return 0;
     }
@@ -399,7 +401,7 @@ Value nero_equals(Value a, Value b) {
     case T_DICT: {
         if (a.as_dict->sz != b.as_dict->sz) break;
         res.as_num = 1;
-        Value keys = nero_dict_keys(1, &a);
+        Value keys = nero_keys(1, &a);
         for (int i = 0; i < keys.as_list->sz; ++i) {
             String key = keys.as_list->ptr[i].as_str;
             if (!nero_equals(get_var(a.as_dict, key), get_var(b.as_dict, key)).as_num) {
@@ -536,30 +538,7 @@ Value nero_exit(int argc, Value *argv) {
     return (Value){T_NIL}; // dum dum compiler
 }
 
-Value nero_dict_set(int argc, Value *argv) {
-    EXPECT(3);
-    EXPECT_TYPE(argv[0], T_DICT);
-    EXPECT_TYPE(argv[1], T_STRING);
-    VariableList *dict = argv[0].as_dict;
-    int idx = dict_get_index(dict, argv[1].as_str);
-    String key = nero_copy(argv[1]).as_str;
-    set_var(dict, key, argv[2]);
-    if (idx != -1) STRFREE(key);
-    return nero_copy(argv[0]);
-}
-
-Value nero_dict_get(int argc, Value *argv) {
-    EXPECT(2);
-    EXPECT_TYPE(argv[0], T_DICT);
-    EXPECT_TYPE(argv[1], T_STRING);
-    String key = argv[1].as_str;
-    Value val = get_var(argv[0].as_dict, key);
-    if (val.type == T_BOOL && val.as_num == -1)
-        SIMPLE_ERROR("Dict has no key '%.*s'\n", key.sz, key.ptr);
-    return nero_copy(val);
-}
-
-Value nero_dict_keys(int argc, Value *argv) {
+Value nero_keys(int argc, Value *argv) {
     EXPECT(1);
     EXPECT_TYPE(argv[0], T_DICT);
     Value keys = {T_LIST, .free = V_FREE, .as_list = nero_list_alloc()};
@@ -741,9 +720,7 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "echo", &nero_echo }));
     LIST_PUSH(nr->extn, ((Foreign) { "read", &nero_read }));
     LIST_PUSH(nr->extn, ((Foreign) { "exit", &nero_exit }));
-    LIST_PUSH(nr->extn, ((Foreign) { "dict_get", &nero_dict_get }));
-    LIST_PUSH(nr->extn, ((Foreign) { "dict_set", &nero_dict_set }));
-    LIST_PUSH(nr->extn, ((Foreign) { "dict_keys", &nero_dict_keys }));
+    LIST_PUSH(nr->extn, ((Foreign) { "keys", &nero_keys }));
     LIST_PUSH(nr->extn, ((Foreign) { "push", &nero_push }));
     LIST_PUSH(nr->extn, ((Foreign) { "pop", &nero_pop }));
     LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
@@ -1044,17 +1021,36 @@ Value exec_dict_key(Nero *nr, Value dict) {
         fprintf(stderr, "Error: %s\nExpected dict\n", errpos(nr, PEEK(0)));
         exit(1);
     }
-    if (PEEK(0).kind != TK_DOT) {
+
+    Token tok = PEEK(0);
+    const int is_bracket = (tok.kind == TK_LSQUARE);
+    String key;
+
+    if (tok.kind != TK_DOT && !is_bracket) {
         fprintf(stderr, "Error: %s\nMissing '.'\n", errpos(nr, PEEK(0)));
         exit(1);
     }
     ADVANCE(1);
-    Token tok = PEEK(0);
-    if (tok.kind != TK_WORD && tok.kind != TK_STRING) {
-        fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, tok));
-        exit(1);
+
+    if (is_bracket) {
+        Value val = exec_expr(nr);
+        if (val.type != T_STRING) {
+            fprintf(stderr, "Error: %s\nExpected string\n", errpos(nr, PEEK(0)));
+            exit(1);
+        }
+        key = val.as_str;
+        if (PEEK(0).kind != TK_RSQUARE) {
+            fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
+            exit(1);
+        }
+    } else {
+        tok = PEEK(0);
+        if (tok.kind != TK_WORD && tok.kind != TK_STRING) {
+            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, tok));
+            exit(1);
+        }
+        key = nero_copy((Value) {T_STRING, .as_str = tok.value}).as_str;
     }
-    String key = nero_copy((Value) {T_STRING, .as_str = tok.value}).as_str;
     ADVANCE(1);
 
     if (PEEK(0).kind == TK_EQ) {
@@ -1116,6 +1112,7 @@ Value nero_get_index(Nero *nr, Value list, int idx) {
 }
 
 Value exec_list_index(Nero *nr, Value list) {
+    if (list.type == T_DICT) return exec_dict_key(nr, list);
     if (list.type != T_LIST && list.type != T_STRING) {
         fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
         exit(1);
