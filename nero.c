@@ -13,13 +13,13 @@ enum {
     // operators
     TK_LPAREN, TK_RPAREN, TK_LBRACK, TK_RBRACK, TK_LSQUARE, TK_RSQUARE, TK_COMMA,
     TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
-    TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_POW, TK_DOT,
+    TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_DOT,
     // keywords
     TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE,
     TK_WHILE, TK_FOR, TK_BREAK, TK_NEXT, TK_IMPORT,
 };
 
-// XXX: implement pow '**', first-class functions
+// XXX: implement pow '**', first-class functions, garbage collector, error type
 // XXX: some way to call more foreign functions at runtime
 
 #define GLOBAL_SCOPE "<global>"
@@ -28,7 +28,7 @@ enum {
 const char *ops[] = {
     "(", ")", "{", "}", "[", "]", ",", "=", "!",
     "==", "!=", "<", ">", "<=", ">=", "&&", "||",
-    "+", "-", "*", "/", "%", "**", ".",
+    "+", "-", "*", "/", "%", ".",
 };
 
 const char *keywords[] = {
@@ -160,8 +160,8 @@ static inline Token next_token(FILE *fp, int file) {
                 LIST_PUSH(tok.value, c);
             }
         } while (c != EOF && c != match);
-        LIST_POP(tok.value); // remove last '\"'
-        return tok; // don't unget last '\"'
+        LIST_POP(tok.value); // remove last quote
+        return tok; // don't unget last quote
     }
     if (is_operator(&c, 1)) {
         char op[2] = {c, fgetc(fp)};
@@ -464,7 +464,6 @@ Value nero_copy(Value val) {
     return res;
 }
 
-// #define EXPECT(exp) if (argc != exp) { fprintf(stderr, "Error: expected %d argument(s), got %d\n", exp, argc); exit(1); }
 #define SIMPLE_ERROR(...) { fprintf(stderr, "Error: "__VA_ARGS__); exit(1); }
 #define EXPECT(N) if (argc != N) { SIMPLE_ERROR("expected %d argument(s), got %d\n", N, argc); }
 #define EXPECT_TYPE(A, T) if (A.type != T) {\
@@ -568,7 +567,6 @@ Value nero_dict_keys(int argc, Value *argv) {
         Value key = nero_copy((Value){T_STRING, .as_str = argv[0].as_dict->ptr[i].name});
         LIST_PUSHP(keys.as_list, key);
     }
-
     return keys;
 }
 
