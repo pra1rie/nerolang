@@ -666,15 +666,19 @@ Value nero_contains(int argc, Value *argv) {
 Value nero_split(int argc, Value *argv) {
     EXPECT(2);
     EXPECT_TYPE(argv[0], T_STRING);
-    EXPECT_TYPE(argv[1], T_LIST);
+    const int is_list = (argv[1].type == T_LIST);
+    if (!is_list) EXPECT_TYPE(argv[1], T_STRING);
+    // split("hello world!", " ") || split("hello world!", [" ", "!"])
 
     Value list = {T_LIST, .free = V_FREE, .as_list = nero_list_alloc()};
     Value tok = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
+
     for (int i = 0; i < argv[0].as_str.sz; ++i) {
         char ch = argv[0].as_str.ptr[i];
-        Value str_i = {T_STRING, .free = V_NOFREE, .as_str = {.sz = 1, .ptr = &ch}};
-        Value args[2] = {argv[1], str_i};
-        if (nero_contains(2, args).as_num) {
+        Value val_ch = {T_STRING, .free = V_NOFREE, .as_str = {.sz = 1, .ptr = &ch}};
+        const int list_condition = (is_list && nero_contains(2, (Value[]){argv[1], val_ch}).as_num);
+        const int string_condition = (!is_list && nero_equals(argv[1], val_ch).as_num);
+        if (list_condition || string_condition) {
             LIST_PUSHP(list.as_list, nero_copy(tok));
             tok.as_str.sz = 0;
         } else {
@@ -683,29 +687,6 @@ Value nero_split(int argc, Value *argv) {
     }
     LIST_PUSHP(list.as_list, nero_copy(tok));
     nero_free(tok);
-    return list;
-}
-
-Value nero_trim(int argc, Value *argv) {
-    EXPECT(2);
-    EXPECT_TYPE(argv[1], T_LIST);
-    if (argv[0].type == T_STRING) {
-        Value str = {T_STRING, .free = V_FREE, .as_str = STRALLOC()};
-        for (int i = 0; i < argv[0].as_str.sz; ++i) {
-            Value str_i = {T_STRING, .as_str = {.sz = 1, .ptr = &argv[0].as_str.ptr[i]}};
-            Value args[2] = {argv[1], str_i};
-            if (!nero_contains(2, args).as_num)
-                strcats(&str.as_str, &str_i.as_str);
-        }
-        return str;
-    }
-    EXPECT_TYPE(argv[0], T_LIST);
-    Value list = {T_LIST, .free = V_FREE, .as_list = nero_list_alloc()};
-    for (int i = 0; i < argv[0].as_list->sz; ++i) {
-        Value args[2] = {argv[1], argv[0].as_list->ptr[i]};
-        if (!nero_contains(2, args).as_num)
-            LIST_PUSHP(list.as_list, nero_copy(argv[0].as_list->ptr[i]));
-    }
     return list;
 }
 
@@ -733,7 +714,6 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "read_file", &nero_read_file }));
     LIST_PUSH(nr->extn, ((Foreign) { "contains", &nero_contains }));
     LIST_PUSH(nr->extn, ((Foreign) { "split", &nero_split }));
-    LIST_PUSH(nr->extn, ((Foreign) { "trim", &nero_trim }));
     LIST_PUSH(nr->extn, ((Foreign) { "arguments", &nero_arguments }));
 }
 
