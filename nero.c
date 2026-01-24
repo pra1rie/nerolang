@@ -514,6 +514,17 @@ Value nero_stringfy(int argc, Value *argv) {
     return str;
 }
 
+Value nero_number(int argc, Value *argv) {
+    EXPECT(1);
+    EXPECT_TYPE(argv[0], T_STRING);
+    const String str = argv[0].as_str;
+    for (int i = 0; i < str.sz; ++i) {
+        if (!(isdigit(str.ptr[i]) || str.ptr[i] == '.'))
+            SIMPLE_ERROR("Invalid number '%.*s'\n", str.sz, str.ptr);
+    }
+    return (Value) {T_NUMBER, .as_num = strtod(str.ptr, NULL)};
+}
+
 Value nero_echo(int argc, Value *argv) {
     for (int i = 0; i < argc; ++i) nero_print(argv[i], 0);
     fprintf(stdout, "\n");
@@ -652,8 +663,12 @@ Value nero_contains(int argc, Value *argv) {
     EXPECT(2);
     if (argv[0].type == T_STRING) {
         EXPECT_TYPE(argv[1], T_STRING);
-        char *str = strstr(argv[0].as_str.ptr, argv[1].as_str.ptr);
-        return (Value) {T_BOOL, .as_num = (str != NULL)};
+        char *haystack = strndup(argv[0].as_str.ptr, argv[0].as_str.sz);
+        char *needle = strndup(argv[1].as_str.ptr, argv[1].as_str.sz);
+        int res = (strstr(haystack, needle) != NULL);
+        free(haystack);
+        free(needle);
+        return (Value) {T_BOOL, .as_num = res};
     }
     EXPECT_TYPE(argv[0], T_LIST);
     for (int i = 0; i < argv[0].as_list->sz; ++i) {
@@ -709,6 +724,7 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "ord", &nero_ord }));
     LIST_PUSH(nr->extn, ((Foreign) { "typeof", &nero_typeof }));
     LIST_PUSH(nr->extn, ((Foreign) { "string", &nero_stringfy }));
+    LIST_PUSH(nr->extn, ((Foreign) { "number", &nero_number }));
     LIST_PUSH(nr->extn, ((Foreign) { "system", &nero_system }));
     LIST_PUSH(nr->extn, ((Foreign) { "write_file", &nero_write_file }));
     LIST_PUSH(nr->extn, ((Foreign) { "read_file", &nero_read_file }));
