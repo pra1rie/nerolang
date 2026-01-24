@@ -517,12 +517,14 @@ Value nero_stringfy(int argc, Value *argv) {
 Value nero_number(int argc, Value *argv) {
     EXPECT(1);
     EXPECT_TYPE(argv[0], T_STRING);
-    const String str = argv[0].as_str;
-    for (int i = 0; i < str.sz; ++i) {
-        if (!(isdigit(str.ptr[i]) || str.ptr[i] == '.'))
-            SIMPLE_ERROR("Invalid number '%.*s'\n", str.sz, str.ptr);
+    char *str = strndup(argv[0].as_str.ptr, argv[0].as_str.sz);
+    for (int i = 0; i < argv[0].as_str.sz; ++i) {
+        if (!(isdigit(str[i]) || str[i] == '.'))
+            SIMPLE_ERROR("Invalid number '%s'\n", str);
     }
-    return (Value) {T_NUMBER, .as_num = strtod(str.ptr, NULL)};
+    double num = strtod(str, NULL);
+    free(str);
+    return (Value) {T_NUMBER, .as_num = num};
 }
 
 Value nero_echo(int argc, Value *argv) {
