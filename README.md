@@ -6,7 +6,7 @@ to learn how recursive-descent parsers worked. I then accidentally deleted
 the source code and was left with just the binary to play around with,
 and then my computer fucking died and I don't even have that anymore.
 
-Thankfully the language was simple enough, so I used it as a """specification"""
+Thankfully the language was simple enough, so I used it as a reference
 as an exercise for writing different implementations and extending upon them.
 
 # Original language
@@ -156,6 +156,7 @@ def string_to_number(str) {
     return num
 }
 
+# you can also just call the builtin 'number' function
 val = string_to_number(read("input a number: "))
 
 if val == 69 || val == 420 {
@@ -197,4 +198,4 @@ echo(dict)
 The most annoying ones i can remember from the top of my head are:
 * It's too goddamn slow (i implemented it using the same method as the original version, by tokenizing the input text and executing it token by token, which is pretty dumb).
 * Memory management is too naive (there is no GC, and the way i handle it is so bizarre, it's almost a ref counter, but not really. i honestly don't even know what that's supposed to be).
-* Modifying dicts/lists passed functions doesn't work properly because the interpreter always copies the values and NEVER passes by reference.
+* Modifying dicts/lists passed to functions doesn't work properly because the interpreter always copies the values and NEVER passes by reference.
