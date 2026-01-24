@@ -138,8 +138,8 @@ These operators:
 And these builtin functions:
 ```
 arguments   chr      contains   echo     exit         keys
-len         ord      pop        push     read         read_file
-split       string   system     typeof   write_file
+len         number   ord        pop      push         read
+read_file   split    string     system   typeof       write_file
 ```
 
 ## Example code
