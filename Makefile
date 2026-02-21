@@ -2,7 +2,7 @@ CC = tcc
 CFLAGS = -Wall -Werror
 
 all:
-	$(CC) -O2 *.c -o nero $(CFLAGS)
+	$(CC) -O2 *.c -o nero -lgc $(CFLAGS)
 
 install: all
 	install -s nero /usr/local/bin
