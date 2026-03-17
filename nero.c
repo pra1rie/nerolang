@@ -27,6 +27,7 @@ enum {
 
 // XXX: implement pow '**', first-class functions, garbage collector, error type
 // XXX: some way to call more foreign functions at runtime
+// XXX: basic ranges (eg. str[1, 5] (str from 1..5); str[3, -1] (str from 3..length-1))
 // XXX: bitwise operators are not reliable (because of double conversions)
 
 #define GLOBAL_SCOPE "<global>"
@@ -645,6 +646,25 @@ Value nero_read_file(int argc, Value *argv) {
     return (Value){T_STRING, .as_str = nero_string_copy(text)};
 }
 
+Value nero_range(int argc, Value *argv) {
+    EXPECT(3);
+    EXPECT_TYPE(argv[1], T_NUMBER);
+    EXPECT_TYPE(argv[2], T_NUMBER);
+    if (argv[0].type != T_STRING) EXPECT_TYPE(argv[0], T_LIST);
+    int len = argv[0].type == T_STRING? argv[0].as_str->sz : argv[0].as_list->sz;
+    int64_t start = (int64_t)argv[1].as_num, end = (int64_t)argv[2].as_num;
+    if (start < 0 || start >= len || end >= len || len+end < 0) SIMPLE_ERROR("List index out of range\n");
+    if (argv[0].type == T_STRING) {
+        String s = {.ptr = argv[0].as_str->ptr+start, .sz = (end < 0)? len+end-1 : end-start+1};
+        Value res = {T_STRING, .as_str = nero_string_copy(s)};
+        return res;
+    }
+    Value res = {T_LIST, .as_list = nero_list_alloc()};
+    for (int i = start; i < (end < 0? len+end : end-start+1); ++i)
+        LIST_PUSHP(res.as_list, argv[0].as_list->ptr[i]);
+    return res;
+}
+
 Value nero_contains(int argc, Value *argv) {
     EXPECT(2);
     if (argv[0].type == T_STRING) {
@@ -712,6 +732,7 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "system", &nero_system }));
     LIST_PUSH(nr->extn, ((Foreign) { "write_file", &nero_write_file }));
     LIST_PUSH(nr->extn, ((Foreign) { "read_file", &nero_read_file }));
+    LIST_PUSH(nr->extn, ((Foreign) { "range", &nero_range }));
     LIST_PUSH(nr->extn, ((Foreign) { "contains", &nero_contains }));
     LIST_PUSH(nr->extn, ((Foreign) { "split", &nero_split }));
     LIST_PUSH(nr->extn, ((Foreign) { "arguments", &nero_arguments }));
