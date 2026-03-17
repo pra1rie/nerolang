@@ -8,9 +8,6 @@
 
 typedef LIST(char) String;
 
-String *strnew(void);
-String *strcopys(String s);
-String *strcopyp(String *s);
 void strcats(String *a, String *b);
 void strcatp(String *a, char *b);
 
