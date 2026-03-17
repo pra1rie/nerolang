@@ -653,7 +653,7 @@ Value nero_range(int argc, Value *argv) {
     if (argv[0].type != T_STRING) EXPECT_TYPE(argv[0], T_LIST);
     int len = argv[0].type == T_STRING? argv[0].as_str->sz : argv[0].as_list->sz;
     int64_t start = (int64_t)argv[1].as_num, end = (int64_t)argv[2].as_num;
-    if (start < 0 || start >= len || end >= len || len+end < 0) SIMPLE_ERROR("List index out of range\n");
+    if (start < 0 || start >= len || end > len || len+end < 0) SIMPLE_ERROR("List index out of range\n");
     if (argv[0].type == T_STRING) {
         String s = {.ptr = argv[0].as_str->ptr+start, .sz = (end < 0)? len+end-1 : end-start+1};
         Value res = {T_STRING, .as_str = nero_string_copy(s)};
