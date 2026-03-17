@@ -476,6 +476,11 @@ Value nero_typeof(int argc, Value *argv) {
     return (Value) {T_STRING, .as_str = type_to_string(argv[0].type)};
 }
 
+Value nero_dup(int argc, Value *argv) {
+    EXPECT(1);
+    return nero_copy(argv[0]);
+}
+
 Value nero_stringfy(int argc, Value *argv) {
     Value str = {T_STRING, .as_str = STRALLOC()};
     for (int i = 0; i < argc; ++i) {
@@ -536,11 +541,13 @@ Value nero_push(int argc, Value *argv) {
     if (argv[0].type == T_STRING) {
         Value s = nero_string(argv[1], 0);
         strcats(&argv[0].as_str, &s.as_str);
-        return nero_copy(argv[0]);
+        return argv[0];
     }
     EXPECT_TYPE(argv[0], T_LIST);
-    LIST_PUSHP(argv[0].as_list, nero_copy(argv[1]));
-    return nero_copy(argv[0]);
+    if (argv[1].type == T_LIST && argv[1].as_list == argv[0].as_list)
+        LIST_PUSHP(argv[0].as_list, nero_copy(argv[1]));
+    else LIST_PUSHP(argv[0].as_list, argv[1]);
+    return argv[0];
 }
 
 Value nero_pop(int argc, Value *argv) {
@@ -548,13 +555,13 @@ Value nero_pop(int argc, Value *argv) {
     if (argv[0].type == T_STRING) {
         if (argv[0].as_str.sz == 0) goto fail;
         LIST_POP(argv[0].as_str);
-        return nero_copy(argv[0]);
+        return argv[0];
     }
     EXPECT_TYPE(argv[0], T_LIST);
     if (argv[0].as_list->sz == 0) goto fail;
     ValueList *list = argv[0].as_list;
     LIST_POPP(list);
-    return nero_copy(argv[0]);
+    return argv[0];
 fail:
     SIMPLE_ERROR("List index out of range\n");
     return (Value){T_NIL}; // dum dum compiler
@@ -587,7 +594,7 @@ Value nero_ord(int argc, Value *argv) {
 Value nero_system(int argc, Value *argv) {
     EXPECT(1);
     Value str = nero_string(argv[0], 0);
-    char cmd[str.as_str.sz];
+    char cmd[str.as_str.sz+1];
     sprintf(cmd, "%.*s", str.as_str.sz, str.as_str.ptr);
     return (Value) {T_NUMBER, .as_num = system(cmd)};
 }
@@ -598,8 +605,7 @@ Value nero_write_file(int argc, Value *argv) {
     char file[argv[0].as_str.sz];
     sprintf(file, "%.*s", argv[0].as_str.sz, argv[0].as_str.ptr);
     FILE *fp = fopen(file, "w+");
-    if (!fp)
-        SIMPLE_ERROR("Could not write file '%s'\n", file);
+    if (!fp) SIMPLE_ERROR("Could not write file '%s'\n", file);
     Value str = nero_string(argv[1], 0);
     fwrite(str.as_str.ptr, sizeof(char), str.as_str.sz, fp);
     fclose(fp);
@@ -614,8 +620,7 @@ Value nero_read_file(int argc, Value *argv) {
     FILE *fp = fopen(file, "r");
     int sz = 0;
     String text;
-    if (!fp)
-        SIMPLE_ERROR("Could not read file '%s'\n", file);
+    if (!fp) SIMPLE_ERROR("Could not read file '%s'\n", file);
     fseek(fp, 0, SEEK_END);
     if ((sz = ftell(fp))) text = STRALLOCN(sz);
     fseek(fp, 0, SEEK_SET);
@@ -665,7 +670,7 @@ Value nero_split(int argc, Value *argv) {
             LIST_PUSH(tok.as_str, ch);
         }
     }
-    LIST_PUSHP(list.as_list, nero_copy(tok));
+    LIST_PUSHP(list.as_list, tok);
     return list;
 }
 
@@ -686,6 +691,7 @@ void nero_init_foreign(Nero *nr) {
     LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
     LIST_PUSH(nr->extn, ((Foreign) { "chr", &nero_chr }));
     LIST_PUSH(nr->extn, ((Foreign) { "ord", &nero_ord }));
+    LIST_PUSH(nr->extn, ((Foreign) { "dup", &nero_dup }));
     LIST_PUSH(nr->extn, ((Foreign) { "typeof", &nero_typeof }));
     LIST_PUSH(nr->extn, ((Foreign) { "string", &nero_stringfy }));
     LIST_PUSH(nr->extn, ((Foreign) { "number", &nero_number }));
@@ -710,14 +716,13 @@ static inline VariableList copy_vars(VariableList *vars) {
 
 void set_var(VariableList *vars, String name, Value val) {
     if (!vars->alloc) *vars = (VariableList) LIST_ALLOC(Variable);
-    Value cpy = nero_copy(val);
     for (int i = 0; i < vars->sz; ++i) {
         if (STRCMPS(vars->ptr[i].name, name)) {
-            vars->ptr[i].value = cpy;
+            vars->ptr[i].value = val;
             return;
         }
     }
-    Variable var = {.name = name, .value = cpy};
+    Variable var = {.name = name, .value = val};
     LIST_PUSHP(vars, var);
 }
 
@@ -782,7 +787,7 @@ Value exec_dict(Nero *nr) {
         }
         ADVANCE(1);
         Value v = exec_expr(nr);
-        set_var(val.as_dict, key, v);
+        set_var(val.as_dict, key, nero_copy(v));
     } while (PEEK(0).kind == TK_COMMA);
     if (PEEK(0).kind != TK_RBRACK) {
         fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0)));
@@ -798,7 +803,7 @@ Value exec_list(Nero *nr) {
         ADVANCE(1); // '[' | ','
         if (PEEK(0).kind == TK_RSQUARE) break;
         Value v = exec_expr(nr);
-        LIST_PUSHP(val.as_list, nero_copy(v));
+        LIST_PUSHP(val.as_list, v);
     } while (PEEK(0).kind == TK_COMMA);
     if (PEEK(0).kind != TK_RSQUARE) {
         fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
@@ -840,7 +845,7 @@ Value exec_call(Nero *nr) {
         ADVANCE(1); // '(' | ','
         if (PEEK(0).kind == TK_RPAREN) break;
         Value val = exec_expr(nr);
-        LIST_PUSHP(args.as_list, nero_copy(val));
+        LIST_PUSHP(args.as_list, val);
     } while (PEEK(0).kind == TK_COMMA);
 
     if (PEEK(0).kind != TK_RPAREN) {
@@ -1014,7 +1019,6 @@ Value exec_dict_key(Nero *nr, Value dict) {
             errpos(nr, tok), key.sz, key.ptr);
         exit(1);
     }
-    val = nero_copy(val);
     return val;
 }
 
@@ -1038,7 +1042,7 @@ Value nero_get_index(Nero *nr, Value list, int idx) {
         val = nero_copy((Value){T_STRING, .as_str = {.sz = 1, .ptr = &list.as_str.ptr[idx]}});
         return val;
     }
-    val = nero_copy(list.as_list->ptr[idx]);
+    val = list.as_list->ptr[idx];
     return val;
 }
 
@@ -1078,7 +1082,7 @@ Value exec_list_index(Nero *nr, Value list) {
 
         nero_check_bounds(nr, list, idx);
         Value val = exec_expr(nr);
-        list.as_list->ptr[idx] = nero_copy(val);
+        list.as_list->ptr[idx] = val;
         return val;
     }
 
@@ -1264,10 +1268,13 @@ end:
 
 Value exec_return(Nero *nr) {
     ADVANCE(1);
-    Value res = exec_expr(nr);
-    Value cpy = nero_copy(res);
+    Value res = {T_NIL};
+    // if token on same line, and not '}' nor ')', then return an expression, otherwise,
+    // it's probably an empty return within some poorly written code.
+    if (PEEK(0).kind != TK_RBRACK && PEEK(0).kind != TK_RPAREN && PEEK(0).line == PEEK(-1).line)
+        res = exec_expr(nr);
     nr->ret = RET_RETURN;
-    return cpy;
+    return res;
 }
 
 Value exec_break(Nero *nr, uint8_t brk) {
@@ -1348,7 +1355,6 @@ Value exec_for(Nero *nr) {
     ADVANCE(1);
     Value iter = exec_expr(nr);
     Block body = parse_block(nr);
-    Value copy = nero_copy(iter);
     int sz;
 
     if (iter.type == T_STRING || iter.type == T_LIST) {
@@ -1369,7 +1375,7 @@ Value exec_for(Nero *nr) {
     Value val;
     for (int i = 0; i < sz; ++i) {
         Value index = (Value){T_NUMBER, .as_num = i};
-        val = (copy.type == T_NUMBER)? index : nero_get_index(nr, copy, i);
+        val = (iter.type == T_NUMBER)? index : nero_get_index(nr, iter, i);
         set_var(&nr->fn->vars, var.value, val);
         if (idx.kind != TK_EOF)
             set_var(&nr->fn->vars, idx.value, index);
@@ -1380,7 +1386,6 @@ Value exec_for(Nero *nr) {
             nr->ret = RET_NO; break;
         }
     }
-
 end:
     nr->ip = body.end+1;
     return res;
