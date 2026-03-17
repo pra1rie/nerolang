@@ -1035,7 +1035,7 @@ Value exec_dict_key(Nero *nr, Value dict) {
             fprintf(stderr, "Error: %s\nExpected string\n", errpos(nr, PEEK(0)));
             exit(1);
         }
-        key = val.as_str;
+        key = nero_string_copy(*val.as_str);
         if (PEEK(0).kind != TK_RSQUARE) {
             fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
             exit(1);
