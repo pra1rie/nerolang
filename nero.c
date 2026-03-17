@@ -17,9 +17,9 @@ enum {
     // constants
     TK_EOF, TK_NIL, TK_FALSE, TK_TRUE, TK_NUMBER, TK_STRING, TK_WORD,
     // operators
-    TK_LPAREN, TK_RPAREN, TK_LBRACK, TK_RBRACK, TK_LSQUARE, TK_RSQUARE, TK_COMMA,
-    TK_EQ, TK_NOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
-    TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_DOT,
+    TK_LPAREN, TK_RPAREN, TK_LBRACK, TK_RBRACK, TK_LSQUARE, TK_RSQUARE, TK_COMMA, TK_EQ,
+    TK_NOT, TK_DOT, TK_PLUS, TK_MINUS, TK_MUL, TK_DIV, TK_MOD, TK_BOR, TK_BAND, TK_XOR,
+    TK_SHL, TK_SHR, TK_BNOT, TK_EQEQ, TK_NEQ, TK_LT, TK_GT, TK_LEQ, TK_GEQ, TK_AND, TK_OR,
     // keywords
     TK_DEF, TK_RETURN, TK_IF, TK_ELIF, TK_ELSE,
     TK_WHILE, TK_FOR, TK_BREAK, TK_NEXT, TK_IMPORT,
@@ -27,14 +27,15 @@ enum {
 
 // XXX: implement pow '**', first-class functions, garbage collector, error type
 // XXX: some way to call more foreign functions at runtime
+// XXX: bitwise operators are not reliable (because of double conversions)
 
 #define GLOBAL_SCOPE "<global>"
 #define MAX_CONDITIONS 1024
 
 const char *ops[] = {
-    "(", ")", "{", "}", "[", "]", ",", "=", "!",
-    "==", "!=", "<", ">", "<=", ">=", "&&", "||",
-    "+", "-", "*", "/", "%", ".",
+    "(", ")", "{", "}", "[", "]", ",", "=", "!", ".",
+    "+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>",
+    "~", "==", "!=", "<", ">", "<=", ">=", "&&", "||",
 };
 
 const char *keywords[] = {
@@ -123,7 +124,7 @@ static inline int is_operator(char *op, int sz) {
 }
 
 static inline int is_word(char c) {
-    return !(is_operator(&c, 1) || isspace(c) || c == '#' || c == '\"');
+    return !(is_operator(&c, 1) || isspace(c) || c == '#' || c == '\"' || c == '\'');
 }
 
 static inline char escape(char c) {
@@ -146,10 +147,16 @@ static inline Token next_token(FILE *fp, int file) {
     tok.value.alloc = 0;
     if (c == EOF) return tok;
     if (isdigit(c)) {
-        tok.kind = TK_NUMBER;
         tok.value = STRALLOC();
+        tok.kind = TK_NUMBER;
         while (c != EOF && (isdigit(c) || c == '.')) {
             LIST_PUSH(tok.value, c); c = fgetc(fp);
+            if (tok.value.ptr[0] == '0' && (c == 'x' || c == 'X')) {
+                do {
+                    LIST_PUSH(tok.value, c); c = fgetc(fp);
+                } while (c != EOF && isxdigit(c));
+                break;
+            }
         }
         goto end;
     }
@@ -280,8 +287,20 @@ static inline ValueList *nero_list_allocn(int sz) {
     return list;
 }
 
+static inline String *nero_string_alloc(void) {
+    String *str = malloc(sizeof(String));
+    *str = (String) STRALLOC();
+    return str;
+}
+
+static inline String *nero_string_copy(String s) {
+    String *str = nero_string_alloc();
+    strcats(str, &s);
+    return str;
+}
+
 Value nero_string(Value val, int escape) {
-    String *str = strnew();
+    String *str = nero_string_alloc();
     char num[100];
     switch (val.type) {
     case T_BOOL:
@@ -413,7 +432,7 @@ Value nero_copy(Value val) {
         res.as_num = val.as_num;
         break;
     case T_STRING:
-        res.as_str = strnew();
+        res.as_str = nero_string_alloc();
         strcats(res.as_str, val.as_str);
         break;
     case T_LIST:
@@ -425,7 +444,7 @@ Value nero_copy(Value val) {
         res.as_dict = malloc(sizeof(VariableList));
         *res.as_dict = (VariableList) LIST_ALLOCN(Variable, val.as_dict->alloc);
         for (int i = 0; i < val.as_dict->sz; ++i) {
-            String *s = strcopys(val.as_dict->ptr[i].name);
+            String *s = nero_string_copy(val.as_dict->ptr[i].name);
             set_var(res.as_dict, *s, val.as_dict->ptr[i].value);
         }
         break;
@@ -458,17 +477,17 @@ static inline String type_to_string(uint8_t type) {
     return str;
 }
 
-static inline int dict_get_index(VariableList *list, String key) {
-    for (int i = 0; i < list->sz; ++i) {
-        if (STRCMPS(list->ptr[i].name, key))
-            return i;
-    }
-    return -1;
-}
+// static inline int dict_get_index(VariableList *list, String key) {
+//     for (int i = 0; i < list->sz; ++i) {
+//         if (STRCMPS(list->ptr[i].name, key))
+//             return i;
+//     }
+//     return -1;
+// }
 
 Value nero_typeof(int argc, Value *argv) {
     EXPECT(1);
-    return (Value) {T_STRING, .as_str = strcopys(type_to_string(argv[0].type))};
+    return (Value) {T_STRING, .as_str = nero_string_copy(type_to_string(argv[0].type))};
 }
 
 Value nero_dup(int argc, Value *argv) {
@@ -477,7 +496,7 @@ Value nero_dup(int argc, Value *argv) {
 }
 
 Value nero_stringfy(int argc, Value *argv) {
-    Value str = {T_STRING, .as_str = strnew()};
+    Value str = {T_STRING, .as_str = nero_string_alloc()};
     for (int i = 0; i < argc; ++i) {
         Value s = nero_string(argv[i], 0);
         strcats(str.as_str, s.as_str);
@@ -507,7 +526,7 @@ Value nero_read(int argc, Value *argv) {
     for (int i = 0; i < argc; ++i) nero_print(argv[i], 0);
     char *l = NULL; size_t n = 0;
     getline(&l, &n, stdin);
-    String *str = strnew();
+    String *str = nero_string_alloc();
     strcatp(str, l);
     LIST_POPP(str); // remove last \n
     return (Value) {T_STRING, .as_str = str};
@@ -525,7 +544,7 @@ Value nero_keys(int argc, Value *argv) {
     EXPECT_TYPE(argv[0], T_DICT);
     Value keys = {T_LIST, .as_list = nero_list_alloc()};
     for (int i = 0; i < argv[0].as_dict->sz; ++i) {
-        Value key = nero_copy((Value){T_STRING, .as_str = strcopys(argv[0].as_dict->ptr[i].name)});
+        Value key = nero_copy((Value){T_STRING, .as_str = nero_string_copy(argv[0].as_dict->ptr[i].name)});
         LIST_PUSHP(keys.as_list, key);
     }
     return keys;
@@ -573,7 +592,7 @@ Value nero_len(int argc, Value *argv) {
 Value nero_chr(int argc, Value *argv) {
     EXPECT(1);
     EXPECT_TYPE(argv[0], T_NUMBER);
-    String *str = strnew();
+    String *str = nero_string_alloc();
     LIST_PUSHP(str, argv[0].as_num);
     return (Value){T_STRING, .as_str = str};
 }
@@ -623,7 +642,7 @@ Value nero_read_file(int argc, Value *argv) {
         SIMPLE_ERROR("Failed to read file '%s'\n", file);
     text.sz = sz;
     fclose(fp);
-    return (Value){T_STRING, .as_str = strcopys(text)};
+    return (Value){T_STRING, .as_str = nero_string_copy(text)};
 }
 
 Value nero_contains(int argc, Value *argv) {
@@ -651,11 +670,11 @@ Value nero_split(int argc, Value *argv) {
     // split("hello world!", " ") || split("hello world!", [" ", "!"])
 
     Value list = {T_LIST, .as_list = nero_list_alloc()};
-    Value tok = {T_STRING, .as_str = strnew()};
+    Value tok = {T_STRING, .as_str = nero_string_alloc()};
 
     for (int i = 0; i < argv[0].as_str->sz; ++i) {
         char ch = argv[0].as_str->ptr[i];
-        Value val_ch = {T_STRING, .as_str = strcopys((String){.sz = 1, .ptr = &ch})};
+        Value val_ch = {T_STRING, .as_str = nero_string_copy((String){.sz = 1, .ptr = &ch})};
         const int list_condition = (is_list && nero_contains(2, (Value[]){argv[1], val_ch}).as_num);
         const int string_condition = (!is_list && nero_equals(argv[1], val_ch).as_num);
         if (list_condition || string_condition) {
@@ -758,7 +777,7 @@ Value exec_number(Nero *nr) {
 }
 
 Value exec_string(Nero *nr) {
-    Value val = nero_copy((Value){T_STRING, .as_str = strcopys(PEEK(0).value)});
+    Value val = nero_copy((Value){T_STRING, .as_str = nero_string_copy(PEEK(0).value)});
     ADVANCE(1);
     return val;
 }
@@ -774,7 +793,7 @@ Value exec_dict(Nero *nr) {
             fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0)));
             exit(1);
         }
-        String *key = strcopys(PEEK(0).value);
+        String *key = nero_string_copy(PEEK(0).value);
         ADVANCE(1);
         if (PEEK(0).kind != TK_EQ) {
             fprintf(stderr, "Error: %s\nMissing '='\n", errpos(nr, PEEK(0)));
@@ -945,6 +964,16 @@ Value exec_term(Nero *nr) {
         ADVANCE(1);
         return (Value) {T_BOOL, .as_num = !nero_true(exec_term(nr))};
     }
+    case TK_BNOT: {
+        Token tk = PEEK(0);
+        ADVANCE(1);
+        Value ret = exec_term(nr);
+        if (ret.type != T_NUMBER) {
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
+            exit(1);
+        }
+        return (Value) {T_NUMBER, .as_num = (double)~(uint64_t)ret.as_num};
+    }
     case TK_LPAREN: {
         Token tk = PEEK(0);
         ADVANCE(1);
@@ -996,14 +1025,14 @@ Value exec_dict_key(Nero *nr, Value dict) {
             fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, tok));
             exit(1);
         }
-        key = strcopys(tok.value);
+        key = nero_string_copy(tok.value);
     }
     ADVANCE(1);
 
     if (PEEK(0).kind == TK_EQ) {
         ADVANCE(1);
         Value val = exec_expr(nr);
-        int idx = dict_get_index(dict.as_dict, *key);
+        // int idx = dict_get_index(dict.as_dict, *key);
         set_var(dict.as_dict, *key, val);
         return val;
     }
@@ -1034,7 +1063,7 @@ Value nero_get_index(Nero *nr, Value list, int idx) {
     Value val;
     if (list.type == T_STRING) {
         String s = {.sz = 1, .ptr = &list.as_str->ptr[idx]};
-        val = nero_copy((Value){T_STRING, .as_str = strcopys(s)});
+        val = nero_copy((Value){T_STRING, .as_str = nero_string_copy(s)});
         return val;
     }
     val = list.as_list->ptr[idx];
@@ -1155,19 +1184,72 @@ Value exec_addsub(Nero *nr) {
     return val;
 }
 
-Value exec_compare(Nero *nr) {
+Value exec_bitshift(Nero *nr) {
     Value val = exec_addsub(nr);
+    Token tk = PEEK(0);
+    while (tk.kind == TK_SHL || tk.kind == TK_SHR) {
+        ADVANCE(1);
+        Value other = exec_addsub(nr);
+        if (other.type != T_NUMBER || val.type != T_NUMBER) {
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
+            exit(1);
+        }
+        switch (tk.kind) {
+        case TK_SHL:
+            val.as_num = (double)((uint64_t)val.as_num << (uint64_t)other.as_num);
+            break;
+        case TK_SHR:
+            val.as_num = (double)((uint64_t)val.as_num >> (uint64_t)other.as_num);
+            break;
+        default:
+            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
+            exit(1);
+        }
+        tk = PEEK(0);
+    }
+    return val;
+}
+
+Value exec_bitwise(Nero *nr) {
+    Value val = exec_bitshift(nr);
+    Token tk = PEEK(0);
+    while (tk.kind == TK_BAND || tk.kind == TK_BOR || tk.kind == TK_XOR) {
+        ADVANCE(1);
+        Value other = exec_bitshift(nr);
+        if (other.type != T_NUMBER || val.type != T_NUMBER) {
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
+            exit(1);
+        }
+        switch (tk.kind) {
+        case TK_BAND:
+            val.as_num = (double)((uint64_t)val.as_num & (uint64_t)other.as_num);
+            break;
+        case TK_BOR:
+            val.as_num = (double)((uint64_t)val.as_num | (uint64_t)other.as_num);
+            break;
+        case TK_XOR:
+            val.as_num = (double)((uint64_t)val.as_num ^ (uint64_t)other.as_num);
+            break;
+        default:
+            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
+            exit(1);
+        }
+        tk = PEEK(0);
+    }
+    return val;
+}
+
+Value exec_compare(Nero *nr) {
+    Value val = exec_bitwise(nr);
     Token tk = PEEK(0);
     if (tk.kind >= TK_EQEQ && tk.kind <= TK_GEQ) {
         ADVANCE(1);
-        Value other = exec_addsub(nr);
+        Value other = exec_bitwise(nr);
         switch (tk.kind) {
         case TK_EQEQ: {
-            Value v = val;
             val = nero_equals(val, other);
         } break;
         case TK_NEQ: {
-            Value v = val;
             val = nero_equals(val, other);
             val.as_num = !val.as_num;
         } break;
@@ -1438,7 +1520,7 @@ int main(int argc, char **argv) {
     args_list = (ValueList) LIST_ALLOC(Value);
     for (int i = 1; i < argc; ++i) {
         String s = {.sz = strlen(argv[i]), .ptr = argv[i]};
-        Value arg = {T_STRING, .as_str = strcopys(s)};
+        Value arg = {T_STRING, .as_str = nero_string_copy(s)};
         LIST_PUSH(args_list, nero_copy(arg));
     }
 
