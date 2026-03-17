@@ -810,7 +810,7 @@ Value exec_dict(Nero *nr) {
     do {
         ADVANCE(1); // '{' | ','
         if (PEEK(0).kind == TK_RBRACK) break;
-        if (PEEK(0).kind != TK_WORD) {
+        if (PEEK(0).kind != TK_WORD && PEEK(0).kind != TK_STRING) {
             fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0)));
             exit(1);
         }
