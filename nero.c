@@ -117,7 +117,7 @@ static inline char skip_space(FILE *fp) {
 
 static inline int is_operator(char *op, int sz) {
     for (int i = 0; i < LENGTH(ops); ++i) {
-        if (!strncmp(ops[i], op, sz))
+        if (sz == strlen(ops[i]) && !strncmp(ops[i], op, sz))
             return 1;
     }
     return 0;
@@ -182,7 +182,7 @@ static inline Token next_token(FILE *fp, int file) {
             sz = 1; ungetc(op[1], fp);
         }
         for (int i = 0; i < LENGTH(ops); ++i) {
-            if (!strncmp(ops[i], op, sz)) {
+            if (strlen(ops[i]) == sz && !strncmp(ops[i], op, sz)) {
                 tok.kind = i+TK_LPAREN;
                 break;
             }
