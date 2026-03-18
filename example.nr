@@ -8,6 +8,7 @@ def string_to_number(str) {
     return num
 }
 
+# you can also just call the builtin 'number' function
 val = string_to_number(read("input a number: "))
 
 if val == 69 || val == 420 {
@@ -23,18 +24,18 @@ list = []
 # this line shouldn't be executed
 if val && list != [] { echo("UwU") }
 
-list = push(list, val)
-list = push(list, list)
-list[0] = 420
+push(list, val)
+push(list, list)
+list[0] = 8008135
 echo("len(", list, ") = ", len(list))
-list[1] = pop(list[1])
+pop(list[1])
 
 dict = {
-    list = list,
+    'list' = list,
     value = val,
 }
 
-dict.list = push(dict.list, "some text")
+push(dict.list, range("some text", 0, 3))
 
 # dictionary keys can only be strings and may be accessed by dict.key, dict."key" or dict["key"]
 for value, i = dict["list"] {

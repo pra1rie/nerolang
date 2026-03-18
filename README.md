@@ -1,5 +1,5 @@
 # Nero
-Implementation of my teeny tiny little toy language in ~1.5k lines of C.
+Implementation of my teeny tiny little toy language in ~1.6k lines of C.
 
 It was one of my very first interpreters, written in [D](https://dlang.org)
 to learn how recursive-descent parsers worked. I then accidentally deleted
@@ -24,7 +24,7 @@ These operators:
 >   <=  >=  !=  ==
 ```
 
-I actually don't remember if it had '&&' and '||'.
+> I actually don't remember if it had '&&' and '||'.
 
 And the following types:
 * nil
@@ -64,7 +64,7 @@ if 0 {
 }
 ```
 
-Everything was an expression, but not everything returned something valid. Anything that wasn't supposed
+Everything was an expression, but not everything returned a valid value. Anything that wasn't supposed
 to return a value would return `nil` (namely, `def`, `import`, `echo`, `system`, `exit`).
 There were also no closures or first-class functions.
 
@@ -86,7 +86,8 @@ let a = read "Input a number: "
 if 0 { this syntax looks so goofy and i hate it }
 let b read "Input another number: "
 
-c = min(a, b) if 0 { this looks so much cleaner, wow }
+if 0 { this type of assignment looks so much cleaner, wow }
+c = min(a, b)
 
 echo "min(", a, ", ", b, ") = ", min(a, b)
 
@@ -105,7 +106,7 @@ if a == nil {
     exit
 
     system always returns nil, and exit always exits (supposedly)
-    so the interpreter shouldnt even try executing this
+    so the interpreter shouldnt even try executing this part
 }
 ```
 
@@ -124,7 +125,8 @@ These operators:
 ```
 (   )   [   ]   {   }   ,   .
 +   -   *   /   %   !   =   &&
-||  <   >   <=  >=  !=  ==
+||  <   >   <=  >=  !=  ==  ~
+&   ^   |   <<  >>
 ```
 
 6 types:
@@ -137,9 +139,9 @@ These operators:
 
 And these builtin functions:
 ```
-arguments   chr      contains   echo     exit         keys
-len         number   ord        pop      push         read
-read_file   split    string     system   typeof       write_file
+arguments   chr      contains   dup      echo     exit    keys
+len         number   ord        pop      push     range   read
+read_file   split    string     system   typeof   write_file
 ```
 
 ## Example code
@@ -172,18 +174,18 @@ list = []
 # this line shouldn't be executed
 if val && list != [] { echo("UwU") }
 
-list = push(list, val)
-list = push(list, list)
-list[0] = 420
+push(list, val)
+push(list, list)
+list[0] = 8008135
 echo("len(", list, ") = ", len(list))
-list[1] = pop(list[1])
+pop(list[1])
 
 dict = {
-    list = list,
+    'list' = list,
     value = val,
 }
 
-dict.list = push(dict.list, "some text")
+push(dict.list, range("some text", 0, 3))
 
 # dictionary keys can only be strings and may be accessed by dict.key, dict."key" or dict["key"]
 for value, i = dict["list"] {
@@ -193,9 +195,34 @@ for value, i = dict["list"] {
 echo(dict)
 ```
 
+## Operator Precedence
+
+Nero's operators are evaluated in this order (highest precedence first):
+```
+( )
+.
+! ~ -
+* / %
++ -
+<< >>
+& | ^
+== != < > <= >=
+&& ||
+```
+
+## Memory Management
+
+This version of nero depends on `libgc` for its memory management.
+It literally lets everything leak, and ***just trusts the GC***.
+
+Under the hood, all its non-numeric types are pointers that get allocated and copied around and are never ever free'd.
+Needless to say, that is extremely stupid and very very slow.
+
+Since nero passes (mostly) everything as a reference, if you need to copy a value, use the builtin `dup` function.
+
 ## Known issues
 
 The most annoying ones i can remember from the top of my head are:
 * It's too goddamn slow (i implemented it using the same method as the original version, by tokenizing the input text and executing it token by token, which is pretty dumb).
-* Memory management is too naive (there is no GC, and the way i handle it is so bizarre, it's almost a ref counter, but not really. i honestly don't even know what that's supposed to be).
-* Modifying dicts/lists passed to functions doesn't work properly because the interpreter always copies the values and NEVER passes by reference.
+* Memory management is genuinely retarded.
+* The language overall is kinda shit (its fun to use tho).
