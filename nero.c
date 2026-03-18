@@ -288,16 +288,28 @@ static inline ValueList *nero_list_allocn(int sz) {
     return list;
 }
 
-static inline String *nero_string_alloc(void) {
+#define nero_string_alloc() (nero_string_allocn(_NERO_STRING_ALLOC_SIZE))
+static inline String *nero_string_allocn(int sz) {
     String *str = malloc(sizeof(String));
-    *str = (String) STRALLOC();
+    str->ptr = malloc((str->alloc = sz) * sizeof(char));
     return str;
 }
 
 static inline String *nero_string_copy(String s) {
-    String *str = nero_string_alloc();
-    strcats(str, &s);
+    String *str = nero_string_allocn(s.sz);
+    memcpy(str->ptr, s.ptr, (str->sz = s.sz));
     return str;
+}
+
+static inline void nero_string_concats(String *str, String *s) {
+    if (str->sz + s->sz >= str->alloc)
+        str->ptr = realloc(str->ptr, str->alloc = (str->sz+s->sz+_NERO_STRING_ALLOC_SIZE));
+    memcpy(str->ptr+str->sz, s->ptr, s->sz);
+    str->sz += s->sz;
+}
+
+static inline void nero_string_concatp(String *str, char *p) {
+    nero_string_concats(str, &(String){.sz = strlen(p), .ptr = p});
 }
 
 Value nero_string(Value val, int escape) {
@@ -305,43 +317,43 @@ Value nero_string(Value val, int escape) {
     char num[100];
     switch (val.type) {
     case T_BOOL:
-        strcatp(str, val.as_num? "true" : "false");
+        nero_string_concatp(str, val.as_num? "true" : "false");
         break;
     case T_NUMBER:
         if (val.as_num == (long)val.as_num)
             sprintf(num, "%ld", (long)val.as_num);
         else
             sprintf(num, "%.2lf", val.as_num);
-        strcatp(str, num);
+        nero_string_concatp(str, num);
         break;
     case T_STRING:
-        if (escape) strcatp(str, "\"");
-        strcats(str, val.as_str);
-        if (escape) strcatp(str, "\"");
+        if (escape) nero_string_concatp(str, "\"");
+        nero_string_concats(str, val.as_str);
+        if (escape) nero_string_concatp(str, "\"");
         break;
     case T_LIST:
-        strcatp(str, "[");
+        nero_string_concatp(str, "[");
         for (int i = 0; i < val.as_list->sz; ++i) {
-            if (i > 0) strcatp(str, ", ");
+            if (i > 0) nero_string_concatp(str, ", ");
             Value v = nero_string(val.as_list->ptr[i], 1);
-            strcats(str, v.as_str);
+            nero_string_concats(str, v.as_str);
         }
-        strcatp(str, "]");
+        nero_string_concatp(str, "]");
         break;
     case T_DICT:
-        strcatp(str, "{");
+        nero_string_concatp(str, "{");
         for (int i = 0; i < val.as_dict->sz; ++i) {
-            if (i > 0) strcatp(str, ", ");
-            strcatp(str, "\"");
-            strcats(str, &val.as_dict->ptr[i].name);
-            strcatp(str, "\" = ");
+            if (i > 0) nero_string_concatp(str, ", ");
+            nero_string_concatp(str, "\"");
+            nero_string_concats(str, &val.as_dict->ptr[i].name);
+            nero_string_concatp(str, "\" = ");
             Value v = nero_string(val.as_dict->ptr[i].value, 1);
-            strcats(str, v.as_str);
+            nero_string_concats(str, v.as_str);
         }
-        strcatp(str, "}");
+        nero_string_concatp(str, "}");
         break;
     default:
-        strcatp(str, "nil");
+        nero_string_concatp(str, "nil");
         break;
     }
     return (Value) {T_STRING, .as_str = str};
@@ -433,8 +445,7 @@ Value nero_copy(Value val) {
         res.as_num = val.as_num;
         break;
     case T_STRING:
-        res.as_str = nero_string_alloc();
-        strcats(res.as_str, val.as_str);
+        res.as_str = nero_string_copy(*val.as_str);
         break;
     case T_LIST:
         res.as_list = nero_list_allocn(val.as_list->alloc);
@@ -463,17 +474,17 @@ static inline String type_to_string(uint8_t type) {
     String str = STRALLOC();
     switch (type) {
     case T_BOOL:
-        strcatp(&str, "bool"); break;
+        nero_string_concatp(&str, "bool"); break;
     case T_NUMBER:
-        strcatp(&str, "number"); break;
+        nero_string_concatp(&str, "number"); break;
     case T_STRING:
-        strcatp(&str, "string"); break;
+        nero_string_concatp(&str, "string"); break;
     case T_LIST:
-        strcatp(&str, "list"); break;
+        nero_string_concatp(&str, "list"); break;
     case T_DICT:
-        strcatp(&str, "dict"); break;
+        nero_string_concatp(&str, "dict"); break;
     default:
-        strcatp(&str, "nil"); break;
+        nero_string_concatp(&str, "nil"); break;
     }
     return str;
 }
@@ -500,7 +511,7 @@ Value nero_stringfy(int argc, Value *argv) {
     Value str = {T_STRING, .as_str = nero_string_alloc()};
     for (int i = 0; i < argc; ++i) {
         Value s = nero_string(argv[i], 0);
-        strcats(str.as_str, s.as_str);
+        nero_string_concats(str.as_str, s.as_str);
     }
     return str;
 }
@@ -528,7 +539,7 @@ Value nero_read(int argc, Value *argv) {
     char *l = NULL; size_t n = 0;
     getline(&l, &n, stdin);
     String *str = nero_string_alloc();
-    strcatp(str, l);
+    nero_string_concatp(str, l);
     LIST_POPP(str); // remove last \n
     return (Value) {T_STRING, .as_str = str};
 }
@@ -555,7 +566,7 @@ Value nero_push(int argc, Value *argv) {
     EXPECT(2);
     if (argv[0].type == T_STRING) {
         Value s = nero_string(argv[1], 0);
-        strcats(argv[0].as_str, s.as_str);
+        nero_string_concats(argv[0].as_str, s.as_str);
         return argv[0];
     }
     EXPECT_TYPE(argv[0], T_LIST);
@@ -640,7 +651,7 @@ Value nero_read_file(int argc, Value *argv) {
     fseek(fp, 0, SEEK_SET);
     if (fread(text.ptr, sizeof(char), sz, fp) != sz)
         SIMPLE_ERROR("Failed to read file '%s'\n", file);
-    text.sz = sz;
+    text.alloc = text.sz = sz;
     fclose(fp);
     return (Value){T_STRING, .as_str = nero_string_copy(text)};
 }
