@@ -559,9 +559,8 @@ Value nero_push(int argc, Value *argv) {
         return argv[0];
     }
     EXPECT_TYPE(argv[0], T_LIST);
-    if (argv[1].type == T_LIST && argv[1].as_list == argv[0].as_list)
-        LIST_PUSHP(argv[0].as_list, nero_copy(argv[1]));
-    else LIST_PUSHP(argv[0].as_list, argv[1]);
+    Value val = nero_equals(argv[1], argv[0]).as_num? nero_copy(argv[1]) : argv[1];
+    LIST_PUSHP(argv[0].as_list, val);
     return argv[0];
 }
 
