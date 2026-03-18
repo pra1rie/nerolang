@@ -949,7 +949,7 @@ Value exec_variable(Nero *nr) {
     return res;
 }
 
-Value exec_term(Nero *nr) {
+Value exec_primary(Nero *nr) {
     switch (PEEK(0).kind) {
     case TK_WORD:
         return exec_variable(nr);
@@ -970,30 +970,6 @@ Value exec_term(Nero *nr) {
     case TK_TRUE:
         ADVANCE(1);
         return (Value) {T_BOOL, .as_num = 1};
-    case TK_MINUS: {
-        Token tk = PEEK(0);
-        ADVANCE(1);
-        Value ret = exec_term(nr);
-        if (ret.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
-        return (Value) {T_NUMBER, .as_num = -ret.as_num};
-    }
-    case TK_NOT: {
-        ADVANCE(1);
-        return (Value) {T_BOOL, .as_num = !nero_true(exec_term(nr))};
-    }
-    case TK_BNOT: {
-        Token tk = PEEK(0);
-        ADVANCE(1);
-        Value ret = exec_term(nr);
-        if (ret.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
-        return (Value) {T_NUMBER, .as_num = (double)~(uint64_t)ret.as_num};
-    }
     case TK_LPAREN: {
         Token tk = PEEK(0);
         ADVANCE(1);
@@ -1133,14 +1109,45 @@ Value exec_list_index(Nero *nr, Value list) {
     return nero_get_index(nr, list, idx);
 }
 
-Value exec_factor(Nero *nr) {
-    Value val = exec_term(nr);
+Value exec_term(Nero *nr) {
+    Value val = exec_primary(nr);
     while (1) {
         if (PEEK(0).kind == TK_LSQUARE) val = exec_list_index(nr, val);
         else if (PEEK(0).kind == TK_DOT) val = exec_dict_key(nr, val);
         else break;
     }
     return val;
+}
+
+Value exec_factor(Nero *nr) {
+    switch (PEEK(0).kind) {
+    case TK_MINUS: {
+        Token tk = PEEK(0);
+        ADVANCE(1);
+        Value ret = exec_term(nr);
+        if (ret.type != T_NUMBER) {
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
+            exit(1);
+        }
+        return (Value) {T_NUMBER, .as_num = -ret.as_num};
+    }
+    case TK_NOT: {
+        ADVANCE(1);
+        return (Value) {T_BOOL, .as_num = !nero_true(exec_term(nr))};
+    }
+    case TK_BNOT: {
+        Token tk = PEEK(0);
+        ADVANCE(1);
+        Value ret = exec_term(nr);
+        if (ret.type != T_NUMBER) {
+            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
+            exit(1);
+        }
+        return (Value) {T_NUMBER, .as_num = (double)~(uint64_t)ret.as_num};
+    }
+    default:
+        return exec_term(nr);
+    }
 }
 
 Value exec_muldiv(Nero *nr) {
