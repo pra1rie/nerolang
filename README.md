@@ -1,5 +1,5 @@
 # Nero
-Implementation of my teeny tiny little toy language in ~1.6k lines of C.
+Implementation of my teeny tiny little toy language in ~1.5k lines of C.
 
 It was one of my very first interpreters, written in [D](https://dlang.org)
 to learn how recursive-descent parsers worked. I then accidentally deleted
@@ -129,11 +129,12 @@ These operators:
 &   ^   |   <<  >>
 ```
 
-6 types:
+7 types:
 * nil
 * bool
-* number
-* string
+* int
+* real
+* str
 * list
 * dict
 
@@ -199,15 +200,18 @@ echo(dict)
 
 Nero's operators are evaluated in this order (highest precedence first):
 ```
-( )
-.
-! ~ -
-* / %
-+ -
-<< >>
-& | ^
-== != < > <= >=
-&& ||
+    ( )
+-- field accessors:
+    . [ ]
+-- unary operators:
+    ! ~ -
+-- binary operators:
+    * / %
+    + -
+    << >>
+    & | ^
+    == != < > <= >=
+    && ||
 ```
 
 ## Memory Management
