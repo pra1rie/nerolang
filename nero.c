@@ -13,6 +13,9 @@
 #define realloc(X, Y) GC_REALLOC(X, Y)
 #define free(X) GC_FREE(X)
 
+#define SIMPLE_ERROR(...) do { fprintf(stderr, "Error: "__VA_ARGS__); exit(1); } while(0)
+#define ERROR(...) SIMPLE_ERROR("%s\n"__VA_ARGS__)
+
 enum {
     // constants
     TK_EOF, TK_NIL, TK_FALSE, TK_TRUE, TK_NUMBER, TK_STRING, TK_WORD,
@@ -25,10 +28,9 @@ enum {
     TK_WHILE, TK_FOR, TK_BREAK, TK_NEXT, TK_IMPORT,
 };
 
-// XXX: implement pow '**', first-class functions, garbage collector, error type
+// XXX: implement pow '**', first-class functions, proper garbage collector, error type
 // XXX: some way to call more foreign functions at runtime
 // XXX: basic ranges (eg. str[1, 5] (str from 1..5); str[3, -1] (str from 3..length-1))
-// XXX: bitwise operators are not reliable (because of double conversions)
 
 #define GLOBAL_SCOPE "<global>"
 #define MAX_CONDITIONS 1024
@@ -61,11 +63,12 @@ typedef LIST(struct Variable) VariableList;
 typedef LIST(struct Function) FunctionList;
 typedef LIST(Foreign) ForeignList;
 
-enum { T_NIL, T_BOOL, T_NUMBER, T_STRING, T_LIST, T_DICT };
+enum { T_NIL, T_BOOL, T_INT, T_REAL, T_STR, T_LIST, T_DICT };
 typedef struct Value {
     uint8_t type;
     union {
-        double as_num;
+        int64_t as_int;
+        double as_real;
         String *as_str;
         ValueList *as_list;
         VariableList *as_dict;
@@ -240,9 +243,8 @@ void tokenize(Nero *nr, String file) {
         if (tok.kind == TK_IMPORT) {
             tok = next_token(fp, cur_file);
             if (tok.kind != TK_STRING) {
-                fprintf(stderr, "Error: %s\nExpected string\n", errpos(nr, tok));
                 fclose(fp);
-                exit(1);
+                ERROR("Expected str\n", errpos(nr, tok));
             }
             tokenize(nr, tok.value);
             if (nr->code.ptr[nr->code.sz-1].kind == TK_EOF)
@@ -258,8 +260,7 @@ void tokenize(Nero *nr, String file) {
     return;
 fail:
     if (fp) fclose(fp);
-    fprintf(stderr, "Error: Could not open file '%.*s'\n", file.sz, file.ptr);
-    exit(1);
+    SIMPLE_ERROR("Could not open file '%.*s'\n", file.sz, file.ptr);
 }
 
 #define PEEK(n) nr->code.ptr[nr->ip+n]
@@ -317,16 +318,17 @@ Value nero_string(Value val, int escape) {
     char num[100];
     switch (val.type) {
     case T_BOOL:
-        nero_string_concatp(str, val.as_num? "true" : "false");
+        nero_string_concatp(str, val.as_int? "true" : "false");
         break;
-    case T_NUMBER:
-        if (val.as_num == (long)val.as_num)
-            sprintf(num, "%ld", (long)val.as_num);
-        else
-            sprintf(num, "%.2lf", val.as_num);
+    case T_INT:
+        sprintf(num, "%ld", val.as_int);
         nero_string_concatp(str, num);
         break;
-    case T_STRING:
+    case T_REAL:
+        sprintf(num, "%.2lf", val.as_real);
+        nero_string_concatp(str, num);
+        break;
+    case T_STR:
         if (escape) nero_string_concatp(str, "\"");
         nero_string_concats(str, val.as_str);
         if (escape) nero_string_concatp(str, "\"");
@@ -356,7 +358,7 @@ Value nero_string(Value val, int escape) {
         nero_string_concatp(str, "nil");
         break;
     }
-    return (Value) {T_STRING, .as_str = str};
+    return (Value) {T_STR, .as_str = str};
 }
 
 void nero_print(Value val, int escape) {
@@ -367,8 +369,9 @@ void nero_print(Value val, int escape) {
 int nero_true(Value v) {
     switch (v.type) {
     case T_BOOL:
-    case T_NUMBER: return v.as_num;
-    case T_STRING: return v.as_str->sz;
+    case T_INT:  return v.as_int;
+    case T_REAL: return v.as_real;
+    case T_STR:  return v.as_str->sz;
     case T_LIST: return v.as_list->sz;
     case T_DICT: return v.as_dict->sz;
     default: return 0;
@@ -376,63 +379,48 @@ int nero_true(Value v) {
 }
 
 Value nero_equals(Value a, Value b) {
-    Value res = {T_BOOL, .as_num = 0};
+    Value res = {T_BOOL, .as_int = 0};
     if (a.type != b.type) return res;
     switch (a.type) {
-    case T_NIL:
-        res.as_num = 1; break;
+    case T_NIL:  res.as_int = 1; break;
     case T_BOOL:
-    case T_NUMBER:
-        res.as_num = a.as_num == b.as_num;
-        break;
-    case T_STRING:
-        res.as_num = STRCMPSP(a.as_str, b.as_str);
-        break;
-    case T_LIST: {
+    case T_INT:  res.as_int = a.as_int == b.as_int; break;
+    case T_REAL: res.as_int = a.as_real == b.as_real; break;
+    case T_STR:  res.as_int = STRCMPSP(a.as_str, b.as_str); break;
+    case T_LIST:
         if (a.as_list->sz != b.as_list->sz) break;
-        res.as_num = 1;
+        res.as_int = 1;
         for (int i = 0; i < a.as_list->sz; ++i) {
-            if (!nero_equals(a.as_list->ptr[i], b.as_list->ptr[i]).as_num) {
-                res.as_num = 0;
+            if (!nero_equals(a.as_list->ptr[i], b.as_list->ptr[i]).as_int) {
+                res.as_int = 0;
                 break;
             }
         }
-    } break;
-    case T_DICT: {
+        break;
+    case T_DICT:
         if (a.as_dict->sz != b.as_dict->sz) break;
-        res.as_num = 1;
+        res.as_int = 1;
         Value keys = nero_keys(1, &a);
         for (int i = 0; i < keys.as_list->sz; ++i) {
             String *key = keys.as_list->ptr[i].as_str;
-            if (!nero_equals(get_var(a.as_dict, *key), get_var(b.as_dict, *key)).as_num) {
-                res.as_num = 0;
+            if (!nero_equals(get_var(a.as_dict, *key), get_var(b.as_dict, *key)).as_int) {
+                res.as_int = 0;
                 break;
             }
         }
-    } break;
-    default:
         break;
     }
     return res;
 }
 
 Value nero_compare(Value a, Value b, uint8_t k) {
-    Value res = {T_BOOL, .as_num = 0};
+    Value res = {T_BOOL, .as_int = 0};
     switch (k) {
-    case TK_LT:
-        res.as_num = a.as_num < b.as_num;
-        break;
-    case TK_LEQ:
-        res.as_num = a.as_num <= b.as_num;
-        break;
-    case TK_GT:
-        res.as_num = a.as_num > b.as_num;
-        break;
-    case TK_GEQ:
-        res.as_num = a.as_num >= b.as_num;
-        break;
-    default:
-        break;
+    case TK_LT:  res.as_int = a.as_int <  b.as_int; break;
+    case TK_LEQ: res.as_int = a.as_int <= b.as_int; break;
+    case TK_GT:  res.as_int = a.as_int >  b.as_int; break;
+    case TK_GEQ: res.as_int = a.as_int >= b.as_int; break;
+    default: break;
     }
     return res;
 }
@@ -441,12 +429,9 @@ Value nero_copy(Value val) {
     Value res = {val.type};
     switch (val.type) {
     case T_BOOL:
-    case T_NUMBER:
-        res.as_num = val.as_num;
-        break;
-    case T_STRING:
-        res.as_str = nero_string_copy(*val.as_str);
-        break;
+    case T_INT:
+    case T_REAL: res.as_int = val.as_int; break;
+    case T_STR:  res.as_str = nero_string_copy(*val.as_str); break;
     case T_LIST:
         res.as_list = nero_list_allocn(val.as_list->alloc);
         for (int i = 0; i < val.as_list->sz; ++i)
@@ -464,42 +449,28 @@ Value nero_copy(Value val) {
     return res;
 }
 
-#define SIMPLE_ERROR(...) { fprintf(stderr, "Error: "__VA_ARGS__); exit(1); }
-#define EXPECT(N) if (argc != N) { SIMPLE_ERROR("expected %d argument(s), got %d\n", N, argc); }
+#define EXPECT(N) if (argc != N) { SIMPLE_ERROR("Expected %d argument(s), got %d\n", N, argc); }
 #define EXPECT_TYPE(A, T) if (A.type != T) {\
     String _exp = type_to_string(T), _got = type_to_string(A.type); \
-    SIMPLE_ERROR("expected %.*s, got %.*s\n", _exp.sz, _exp.ptr, _got.sz, _got.ptr); }
+    SIMPLE_ERROR("Expected %.*s, got %.*s\n", _exp.sz, _exp.ptr, _got.sz, _got.ptr); }
 
 static inline String type_to_string(uint8_t type) {
     String str = STRALLOC();
     switch (type) {
-    case T_BOOL:
-        nero_string_concatp(&str, "bool"); break;
-    case T_NUMBER:
-        nero_string_concatp(&str, "number"); break;
-    case T_STRING:
-        nero_string_concatp(&str, "string"); break;
-    case T_LIST:
-        nero_string_concatp(&str, "list"); break;
-    case T_DICT:
-        nero_string_concatp(&str, "dict"); break;
-    default:
-        nero_string_concatp(&str, "nil"); break;
+    case T_BOOL: nero_string_concatp(&str, "bool"); break;
+    case T_INT:  nero_string_concatp(&str, "int"); break;
+    case T_REAL: nero_string_concatp(&str, "real"); break;
+    case T_STR:  nero_string_concatp(&str, "str"); break;
+    case T_LIST: nero_string_concatp(&str, "list"); break;
+    case T_DICT: nero_string_concatp(&str, "dict"); break;
+    default:     nero_string_concatp(&str, "nil"); break;
     }
     return str;
 }
 
-// static inline int dict_get_index(VariableList *list, String key) {
-//     for (int i = 0; i < list->sz; ++i) {
-//         if (STRCMPS(list->ptr[i].name, key))
-//             return i;
-//     }
-//     return -1;
-// }
-
 Value nero_typeof(int argc, Value *argv) {
     EXPECT(1);
-    return (Value) {T_STRING, .as_str = nero_string_copy(type_to_string(argv[0].type))};
+    return (Value) {T_STR, .as_str = nero_string_copy(type_to_string(argv[0].type))};
 }
 
 Value nero_dup(int argc, Value *argv) {
@@ -508,7 +479,7 @@ Value nero_dup(int argc, Value *argv) {
 }
 
 Value nero_stringfy(int argc, Value *argv) {
-    Value str = {T_STRING, .as_str = nero_string_alloc()};
+    Value str = {T_STR, .as_str = nero_string_alloc()};
     for (int i = 0; i < argc; ++i) {
         Value s = nero_string(argv[i], 0);
         nero_string_concats(str.as_str, s.as_str);
@@ -518,14 +489,16 @@ Value nero_stringfy(int argc, Value *argv) {
 
 Value nero_number(int argc, Value *argv) {
     EXPECT(1);
-    EXPECT_TYPE(argv[0], T_STRING);
+    EXPECT_TYPE(argv[0], T_STR);
+    int found_dot = 0;
     char *str = strndup(argv[0].as_str->ptr, argv[0].as_str->sz);
     for (int i = 0; i < argv[0].as_str->sz; ++i) {
-        if (!(isdigit(str[i]) || str[i] == '.'))
+        if (!(isdigit(str[i]) || str[i] == '.') || (str[i] == '.' && found_dot))
             SIMPLE_ERROR("Invalid number '%s'\n", str);
+        if (str[i] == '.') found_dot = 1;
     }
-    double num = strtod(str, NULL);
-    return (Value) {T_NUMBER, .as_num = num};
+    if (found_dot) return (Value) {T_REAL, .as_real = strtod(str, NULL)};
+    return (Value) {T_INT, .as_int = strtol(str, NULL, 10)};
 }
 
 Value nero_echo(int argc, Value *argv) {
@@ -541,13 +514,13 @@ Value nero_read(int argc, Value *argv) {
     String *str = nero_string_alloc();
     nero_string_concatp(str, l);
     LIST_POPP(str); // remove last \n
-    return (Value) {T_STRING, .as_str = str};
+    return (Value) {T_STR, .as_str = str};
 }
 
 Value nero_exit(int argc, Value *argv) {
     EXPECT(1);
-    EXPECT_TYPE(argv[0], T_NUMBER);
-    exit((int)argv[0].as_num);
+    EXPECT_TYPE(argv[0], T_INT);
+    exit((int)argv[0].as_int);
     return (Value){T_NIL}; // dum dum compiler
 }
 
@@ -556,7 +529,7 @@ Value nero_keys(int argc, Value *argv) {
     EXPECT_TYPE(argv[0], T_DICT);
     Value keys = {T_LIST, .as_list = nero_list_alloc()};
     for (int i = 0; i < argv[0].as_dict->sz; ++i) {
-        Value key = nero_copy((Value){T_STRING, .as_str = nero_string_copy(argv[0].as_dict->ptr[i].name)});
+        Value key = nero_copy((Value){T_STR, .as_str = nero_string_copy(argv[0].as_dict->ptr[i].name)});
         LIST_PUSHP(keys.as_list, key);
     }
     return keys;
@@ -564,20 +537,20 @@ Value nero_keys(int argc, Value *argv) {
 
 Value nero_push(int argc, Value *argv) {
     EXPECT(2);
-    if (argv[0].type == T_STRING) {
+    if (argv[0].type == T_STR) {
         Value s = nero_string(argv[1], 0);
         nero_string_concats(argv[0].as_str, s.as_str);
         return argv[0];
     }
     EXPECT_TYPE(argv[0], T_LIST);
-    Value val = nero_equals(argv[1], argv[0]).as_num? nero_copy(argv[1]) : argv[1];
+    Value val = nero_equals(argv[1], argv[0]).as_int? nero_copy(argv[1]) : argv[1];
     LIST_PUSHP(argv[0].as_list, val);
     return argv[0];
 }
 
 Value nero_pop(int argc, Value *argv) {
     EXPECT(1);
-    if (argv[0].type == T_STRING) {
+    if (argv[0].type == T_STR) {
         if (argv[0].as_str->sz == 0) goto fail;
         LIST_POPP(argv[0].as_str);
         return argv[0];
@@ -594,26 +567,24 @@ fail:
 
 Value nero_len(int argc, Value *argv) {
     EXPECT(1);
-    if (argv[0].type == T_STRING)
-        return (Value) {T_NUMBER, .as_num = argv[0].as_str->sz};
+    if (argv[0].type == T_STR) return (Value) {T_INT, .as_int = argv[0].as_str->sz};
     EXPECT_TYPE(argv[0], T_LIST);
-    return (Value) {T_NUMBER, .as_num = argv[0].as_list->sz};
+    return (Value) {T_INT, .as_int = argv[0].as_list->sz};
 }
 
 Value nero_chr(int argc, Value *argv) {
     EXPECT(1);
-    EXPECT_TYPE(argv[0], T_NUMBER);
+    EXPECT_TYPE(argv[0], T_INT);
     String *str = nero_string_alloc();
-    LIST_PUSHP(str, argv[0].as_num);
-    return (Value){T_STRING, .as_str = str};
+    LIST_PUSHP(str, argv[0].as_int);
+    return (Value){T_STR, .as_str = str};
 }
 
 Value nero_ord(int argc, Value *argv) {
     EXPECT(1);
-    EXPECT_TYPE(argv[0], T_STRING);
-    if (argv[0].as_str->sz != 1)
-        SIMPLE_ERROR("Expected string of size 1\n");
-    return (Value){T_NUMBER, .as_num = argv[0].as_str->ptr[0]};
+    EXPECT_TYPE(argv[0], T_STR);
+    if (argv[0].as_str->sz != 1) SIMPLE_ERROR("Expected str of size 1\n");
+    return (Value){T_INT, .as_int = argv[0].as_str->ptr[0]};
 }
 
 Value nero_system(int argc, Value *argv) {
@@ -621,12 +592,12 @@ Value nero_system(int argc, Value *argv) {
     Value str = nero_string(argv[0], 0);
     char cmd[str.as_str->sz];
     sprintf(cmd, "%.*s", str.as_str->sz, str.as_str->ptr);
-    return (Value) {T_NUMBER, .as_num = system(cmd)};
+    return (Value) {T_INT, .as_int = system(cmd)};
 }
 
 Value nero_write_file(int argc, Value *argv) {
     EXPECT(2);
-    EXPECT_TYPE(argv[0], T_STRING);
+    EXPECT_TYPE(argv[0], T_STR);
     char file[argv[0].as_str->sz];
     sprintf(file, "%.*s", argv[0].as_str->sz, argv[0].as_str->ptr);
     FILE *fp = fopen(file, "w+");
@@ -639,7 +610,7 @@ Value nero_write_file(int argc, Value *argv) {
 
 Value nero_read_file(int argc, Value *argv) {
     EXPECT(1);
-    EXPECT_TYPE(argv[0], T_STRING);
+    EXPECT_TYPE(argv[0], T_STR);
     char file[argv[0].as_str->sz];
     sprintf(file, "%.*s", argv[0].as_str->sz, argv[0].as_str->ptr);
     FILE *fp = fopen(file, "r");
@@ -649,24 +620,23 @@ Value nero_read_file(int argc, Value *argv) {
     fseek(fp, 0, SEEK_END);
     if ((sz = ftell(fp))) text = STRALLOCN(sz);
     fseek(fp, 0, SEEK_SET);
-    if (fread(text.ptr, sizeof(char), sz, fp) != sz)
-        SIMPLE_ERROR("Failed to read file '%s'\n", file);
+    if (fread(text.ptr, sizeof(char), sz, fp) != sz) SIMPLE_ERROR("Failed to read file '%s'\n", file);
     text.alloc = text.sz = sz;
     fclose(fp);
-    return (Value){T_STRING, .as_str = nero_string_copy(text)};
+    return (Value){T_STR, .as_str = nero_string_copy(text)};
 }
 
 Value nero_range(int argc, Value *argv) {
     EXPECT(3);
-    EXPECT_TYPE(argv[1], T_NUMBER);
-    EXPECT_TYPE(argv[2], T_NUMBER);
-    if (argv[0].type != T_STRING) EXPECT_TYPE(argv[0], T_LIST);
-    int len = argv[0].type == T_STRING? argv[0].as_str->sz : argv[0].as_list->sz;
-    int64_t start = (int64_t)argv[1].as_num, end = (int64_t)argv[2].as_num;
+    EXPECT_TYPE(argv[1], T_INT);
+    EXPECT_TYPE(argv[2], T_INT);
+    if (argv[0].type != T_STR) EXPECT_TYPE(argv[0], T_LIST);
+    int len = argv[0].type == T_STR? argv[0].as_str->sz : argv[0].as_list->sz;
+    int64_t start = argv[1].as_int, end = argv[2].as_int;
     if (start < 0 || start >= len || end > len || len+end < 0) SIMPLE_ERROR("List index out of range\n");
-    if (argv[0].type == T_STRING) {
+    if (argv[0].type == T_STR) {
         String s = {.ptr = argv[0].as_str->ptr+start, .sz = (end <= 0? (len-start)+end : end-start+1)};
-        Value res = {T_STRING, .as_str = nero_string_copy(s)};
+        Value res = {T_STR, .as_str = nero_string_copy(s)};
         return res;
     }
     Value res = {T_LIST, .as_list = nero_list_alloc()};
@@ -677,36 +647,36 @@ Value nero_range(int argc, Value *argv) {
 
 Value nero_contains(int argc, Value *argv) {
     EXPECT(2);
-    if (argv[0].type == T_STRING) {
-        EXPECT_TYPE(argv[1], T_STRING);
+    if (argv[0].type == T_STR) {
+        EXPECT_TYPE(argv[1], T_STR);
         char *haystack = strndup(argv[0].as_str->ptr, argv[0].as_str->sz);
         char *needle = strndup(argv[1].as_str->ptr, argv[1].as_str->sz);
         int res = (strstr(haystack, needle) != NULL);
-        return (Value) {T_BOOL, .as_num = res};
+        return (Value) {T_BOOL, .as_int = res};
     }
     EXPECT_TYPE(argv[0], T_LIST);
     for (int i = 0; i < argv[0].as_list->sz; ++i) {
         Value v = argv[0].as_list->ptr[i];
-        if (nero_equals(v, argv[1]).as_num) return (Value) {T_BOOL, .as_num = 1};
+        if (nero_equals(v, argv[1]).as_int) return (Value) {T_BOOL, .as_int = 1};
     }
-    return (Value) {T_BOOL, .as_num = 0};
+    return (Value) {T_BOOL, .as_int = 0};
 }
 
 Value nero_split(int argc, Value *argv) {
     EXPECT(2);
-    EXPECT_TYPE(argv[0], T_STRING);
+    EXPECT_TYPE(argv[0], T_STR);
     const int is_list = (argv[1].type == T_LIST);
-    if (!is_list) EXPECT_TYPE(argv[1], T_STRING);
+    if (!is_list) EXPECT_TYPE(argv[1], T_STR);
     // split("hello world!", " ") || split("hello world!", [" ", "!"])
 
     Value list = {T_LIST, .as_list = nero_list_alloc()};
-    Value tok = {T_STRING, .as_str = nero_string_alloc()};
+    Value tok = {T_STR, .as_str = nero_string_alloc()};
 
     for (int i = 0; i < argv[0].as_str->sz; ++i) {
         char ch = argv[0].as_str->ptr[i];
-        Value val_ch = {T_STRING, .as_str = nero_string_copy((String){.sz = 1, .ptr = &ch})};
-        const int list_condition = (is_list && nero_contains(2, (Value[]){argv[1], val_ch}).as_num);
-        const int string_condition = (!is_list && nero_equals(argv[1], val_ch).as_num);
+        Value val_ch = {T_STR, .as_str = nero_string_copy((String){.sz = 1, .ptr = &ch})};
+        const int list_condition = (is_list && nero_contains(2, (Value[]){argv[1], val_ch}).as_int);
+        const int string_condition = (!is_list && nero_equals(argv[1], val_ch).as_int);
         if (list_condition || string_condition) {
             LIST_PUSHP(list.as_list, nero_copy(tok));
             tok.as_str->sz = 0;
@@ -726,26 +696,26 @@ Value nero_arguments(int argc, Value *argv) {
 
 void nero_init_foreign(Nero *nr) {
     nr->extn = (ForeignList) LIST_ALLOC(Foreign);
-    LIST_PUSH(nr->extn, ((Foreign) { "echo", &nero_echo }));
-    LIST_PUSH(nr->extn, ((Foreign) { "read", &nero_read }));
-    LIST_PUSH(nr->extn, ((Foreign) { "exit", &nero_exit }));
-    LIST_PUSH(nr->extn, ((Foreign) { "keys", &nero_keys }));
-    LIST_PUSH(nr->extn, ((Foreign) { "push", &nero_push }));
-    LIST_PUSH(nr->extn, ((Foreign) { "pop", &nero_pop }));
-    LIST_PUSH(nr->extn, ((Foreign) { "len", &nero_len }));
-    LIST_PUSH(nr->extn, ((Foreign) { "chr", &nero_chr }));
-    LIST_PUSH(nr->extn, ((Foreign) { "ord", &nero_ord }));
-    LIST_PUSH(nr->extn, ((Foreign) { "dup", &nero_dup }));
-    LIST_PUSH(nr->extn, ((Foreign) { "typeof", &nero_typeof }));
-    LIST_PUSH(nr->extn, ((Foreign) { "string", &nero_stringfy }));
-    LIST_PUSH(nr->extn, ((Foreign) { "number", &nero_number }));
-    LIST_PUSH(nr->extn, ((Foreign) { "system", &nero_system }));
+    LIST_PUSH(nr->extn, ((Foreign) { "echo",       &nero_echo }));
+    LIST_PUSH(nr->extn, ((Foreign) { "read",       &nero_read }));
+    LIST_PUSH(nr->extn, ((Foreign) { "exit",       &nero_exit }));
+    LIST_PUSH(nr->extn, ((Foreign) { "keys",       &nero_keys }));
+    LIST_PUSH(nr->extn, ((Foreign) { "push",       &nero_push }));
+    LIST_PUSH(nr->extn, ((Foreign) { "pop",        &nero_pop }));
+    LIST_PUSH(nr->extn, ((Foreign) { "len",        &nero_len }));
+    LIST_PUSH(nr->extn, ((Foreign) { "chr",        &nero_chr }));
+    LIST_PUSH(nr->extn, ((Foreign) { "ord",        &nero_ord }));
+    LIST_PUSH(nr->extn, ((Foreign) { "dup",        &nero_dup }));
+    LIST_PUSH(nr->extn, ((Foreign) { "typeof",     &nero_typeof }));
+    LIST_PUSH(nr->extn, ((Foreign) { "string",     &nero_stringfy }));
+    LIST_PUSH(nr->extn, ((Foreign) { "number",     &nero_number }));
+    LIST_PUSH(nr->extn, ((Foreign) { "system",     &nero_system }));
     LIST_PUSH(nr->extn, ((Foreign) { "write_file", &nero_write_file }));
-    LIST_PUSH(nr->extn, ((Foreign) { "read_file", &nero_read_file }));
-    LIST_PUSH(nr->extn, ((Foreign) { "range", &nero_range }));
-    LIST_PUSH(nr->extn, ((Foreign) { "contains", &nero_contains }));
-    LIST_PUSH(nr->extn, ((Foreign) { "split", &nero_split }));
-    LIST_PUSH(nr->extn, ((Foreign) { "arguments", &nero_arguments }));
+    LIST_PUSH(nr->extn, ((Foreign) { "read_file",  &nero_read_file }));
+    LIST_PUSH(nr->extn, ((Foreign) { "range",      &nero_range }));
+    LIST_PUSH(nr->extn, ((Foreign) { "contains",   &nero_contains }));
+    LIST_PUSH(nr->extn, ((Foreign) { "split",      &nero_split }));
+    LIST_PUSH(nr->extn, ((Foreign) { "arguments",  &nero_arguments }));
 }
 
 static inline void free_vars(VariableList *vars) {
@@ -754,8 +724,7 @@ static inline void free_vars(VariableList *vars) {
 
 static inline VariableList copy_vars(VariableList *vars) {
     VariableList copy = LIST_ALLOC(Variable);
-    for (int i = 0; i < vars->sz; ++i)
-        LIST_PUSH(copy, vars->ptr[i]);
+    for (int i = 0; i < vars->sz; ++i) LIST_PUSH(copy, vars->ptr[i]);
     return copy;
 }
 
@@ -778,7 +747,7 @@ Value get_var(VariableList *vars, String name) {
             return vars->ptr[i].value;
     }
 fail:
-    return (Value){T_BOOL, .as_num = -1};
+    return (Value){T_BOOL, .as_int = -1};
 }
 
 Value nero_call(Nero *nr, Function fn) {
@@ -801,14 +770,24 @@ fail:
     return (Function) {.code = {-1}};
 }
 
+#define EXPECT_INT(T, A) if ((A).type != T_INT) ERROR("Expected int\n", errpos(nr, (T)));
+#define EXPECT_NUMBER(T, A) if ((A).type != T_REAL) EXPECT_INT(T, A)
+
+#define GET_NUMBER(N) (N).type == T_REAL? (N).as_real : (N).as_int
+#define OPERATE_ON_NUMBER(OP, A, B) \
+    if ((A).type == T_REAL) (A).as_real OP##= GET_NUMBER(B); else (A).as_int OP##= GET_NUMBER(B);
+
 Value exec_number(Nero *nr) {
-    Value val = {T_NUMBER, .as_num = strtod(PEEK(0).value.ptr, NULL)};
+    Value val;
+    if (strchr(PEEK(0).value.ptr, '.'))
+        val = (Value) {T_REAL, .as_real = strtod(PEEK(0).value.ptr, NULL)};
+    else val = (Value) {T_INT, .as_int = strtol(PEEK(0).value.ptr, NULL, 0)};
     ADVANCE(1);
     return val;
 }
 
 Value exec_string(Nero *nr) {
-    Value val = nero_copy((Value){T_STRING, .as_str = nero_string_copy(PEEK(0).value)});
+    Value val = nero_copy((Value){T_STR, .as_str = nero_string_copy(PEEK(0).value)});
     ADVANCE(1);
     return val;
 }
@@ -820,24 +799,16 @@ Value exec_dict(Nero *nr) {
     do {
         ADVANCE(1); // '{' | ','
         if (PEEK(0).kind == TK_RBRACK) break;
-        if (PEEK(0).kind != TK_WORD && PEEK(0).kind != TK_STRING) {
-            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0)));
-            exit(1);
-        }
+        if (PEEK(0).kind != TK_WORD && PEEK(0).kind != TK_STRING)
+            ERROR("Expected word\n", errpos(nr, PEEK(0)));
         String *key = nero_string_copy(PEEK(0).value);
         ADVANCE(1);
-        if (PEEK(0).kind != TK_EQ) {
-            fprintf(stderr, "Error: %s\nMissing '='\n", errpos(nr, PEEK(0)));
-            exit(1);
-        }
+        if (PEEK(0).kind != TK_EQ) ERROR("Missing '='\n", errpos(nr, PEEK(0)));
         ADVANCE(1);
         Value v = exec_expr(nr);
         set_var(val.as_dict, *key, nero_copy(v));
     } while (PEEK(0).kind == TK_COMMA);
-    if (PEEK(0).kind != TK_RBRACK) {
-        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_RBRACK) ERROR("Missing '}'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
     return val;
 }
@@ -850,10 +821,7 @@ Value exec_list(Nero *nr) {
         Value v = exec_expr(nr);
         LIST_PUSHP(val.as_list, v);
     } while (PEEK(0).kind == TK_COMMA);
-    if (PEEK(0).kind != TK_RSQUARE) {
-        fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_RSQUARE) ERROR("Missing ']'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
     return val;
 }
@@ -862,8 +830,7 @@ Value exec_assign(Nero *nr) {
     String var = PEEK(0).value;
     ADVANCE(2);
     Value res = exec_expr(nr);
-    if (STRCMPP(nr->fn->name, "<global>"))
-        set_var(&nr->vars, var, res);
+    if (STRCMPP(nr->fn->name, "<global>")) set_var(&nr->vars, var, res);
     else set_var(&nr->fn->vars, var, res);
     return res;
 }
@@ -876,9 +843,7 @@ static Value call_foreign(Nero *nr, Token tok, Value args) {
             return res;
         }
     }
-    fprintf(stderr, "Error: %s\nUndefined function '%.*s'\n",
-        errpos(nr, tok), tok.value.sz, tok.value.ptr);
-    exit(1);
+    ERROR("Undefined function '%.*s'\n", errpos(nr, tok), tok.value.sz, tok.value.ptr);
     return (Value){T_NIL}; // dum dum compiler
 }
 
@@ -892,20 +857,14 @@ Value exec_call(Nero *nr) {
         Value val = exec_expr(nr);
         LIST_PUSHP(args.as_list, val);
     } while (PEEK(0).kind == TK_COMMA);
-
-    if (PEEK(0).kind != TK_RPAREN) {
-        fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_RPAREN) ERROR("Missing ')'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
     Function fn;
     if ((fn = get_fun(&nr->funs, tok.value)).code.start == -1)
         return call_foreign(nr, tok, args);
-    if (fn.vars.sz != args.as_list->sz) {
-        fprintf(stderr, "Error: %s\nFunction '%.*s' expects %d argument(s), got %d\n",
+    if (fn.vars.sz != args.as_list->sz)
+        ERROR("Function '%.*s' expects %d argument(s), got %d\n",
             errpos(nr, tok), tok.value.sz, tok.value.ptr, fn.vars.sz, args.as_list->sz);
-        exit(1);
-    }
     VariableList vars = fn.vars, copy = copy_vars(&fn.vars);
     fn.vars = copy;
     for (int i = 0; i < fn.vars.sz; ++i)
@@ -918,24 +877,15 @@ Value exec_call(Nero *nr) {
 Block parse_block(Nero *nr) {
     Block blk;
     int id = 0;
-    if (PEEK(0).kind != TK_LBRACK) {
-        fprintf(stderr, "Error: %s\nExpected '{'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_LBRACK) ERROR("Expected '{'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
     blk.start = nr->ip;
     while (PEEK(0).kind != TK_EOF) {
         if (PEEK(0).kind == TK_LBRACK) ++id;
-        if (PEEK(0).kind == TK_RBRACK) {
-            if (--id < 0) break;
-        }
+        if (PEEK(0).kind == TK_RBRACK) if (--id < 0) break;
         ADVANCE(1);
     }
-
-    if (PEEK(0).kind != TK_RBRACK) {
-        fprintf(stderr, "Error: %s\nMissing '}'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_RBRACK) ERROR("Missing '}'\n", errpos(nr, PEEK(0)));
     blk.end = nr->ip;
     ADVANCE(1);
     return blk;
@@ -943,134 +893,89 @@ Block parse_block(Nero *nr) {
 
 Value exec_variable(Nero *nr) {
     Token var = PEEK(0);
-    if (PEEK(1).kind == TK_EQ)
-        return exec_assign(nr);
-    if (PEEK(1).kind == TK_LPAREN)
-        return exec_call(nr);
-
+    if (PEEK(1).kind == TK_EQ) return exec_assign(nr);
+    if (PEEK(1).kind == TK_LPAREN) return exec_call(nr);
     ADVANCE(1);
     Value res = get_var(&nr->fn->vars, var.value);
-    if (res.type == T_BOOL && res.as_num == -1)
+    if (res.type == T_BOOL && res.as_int == -1)
         res = get_var(&nr->vars, var.value);
-    if (res.type == T_BOOL && res.as_num == -1) {
-        fprintf(stderr, "Error: %s\nUndefined variable '%.*s'\n",
-            errpos(nr, var), var.value.sz, var.value.ptr);
-        exit(1);
-    }
+    if (res.type == T_BOOL && res.as_int == -1)
+        ERROR("Undefined variable '%.*s'\n", errpos(nr, var), var.value.sz, var.value.ptr);
     return res;
 }
 
 Value exec_primary(Nero *nr) {
     switch (PEEK(0).kind) {
-    case TK_WORD:
-        return exec_variable(nr);
-    case TK_NUMBER:
-        return exec_number(nr);
-    case TK_STRING:
-        return exec_string(nr);
+    case TK_WORD:    return exec_variable(nr);
+    case TK_NUMBER:  return exec_number(nr);
+    case TK_STRING:  return exec_string(nr);
+    case TK_LSQUARE: return exec_list(nr);
+    case TK_LBRACK:  return exec_dict(nr);
     case TK_NIL:
         ADVANCE(1);
         return (Value) {T_NIL};
-    case TK_LSQUARE:
-        return exec_list(nr);
-    case TK_LBRACK:
-        return exec_dict(nr);
     case TK_FALSE:
         ADVANCE(1);
-        return (Value) {T_BOOL, .as_num = 0};
+        return (Value) {T_BOOL, .as_int = 0};
     case TK_TRUE:
         ADVANCE(1);
-        return (Value) {T_BOOL, .as_num = 1};
+        return (Value) {T_BOOL, .as_int = 1};
     case TK_LPAREN: {
         Token tk = PEEK(0);
         ADVANCE(1);
         Value ret = exec_expr(nr);
-        if (PEEK(0).kind != TK_RPAREN) {
-            fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, tk));
-            exit(1);
-        }
+        if (PEEK(0).kind != TK_RPAREN) ERROR("Missing ')'\n", errpos(nr, tk));
         ADVANCE(1);
         return ret;
     }
-    default:
-        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0)));
-        exit(1);
+    default: ERROR("Unexpected token\n", errpos(nr, PEEK(0)));
     }
     return (Value){T_NIL}; // dum dum compiler
 }
 
 Value exec_dict_key(Nero *nr, Value dict) {
-    if (dict.type != T_DICT) {
-        fprintf(stderr, "Error: %s\nExpected dict\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
-
+    if (dict.type != T_DICT) ERROR("Expected dict\n", errpos(nr, PEEK(0)));
     Token tok = PEEK(0);
     const int is_bracket = (tok.kind == TK_LSQUARE);
     String *key;
 
-    if (tok.kind != TK_DOT && !is_bracket) {
-        fprintf(stderr, "Error: %s\nMissing '.'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (tok.kind != TK_DOT && !is_bracket) ERROR("Missing '.'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
-
     if (is_bracket) {
         Value val = exec_expr(nr);
-        if (val.type != T_STRING) {
-            fprintf(stderr, "Error: %s\nExpected string\n", errpos(nr, PEEK(0)));
-            exit(1);
-        }
+        if (val.type != T_STR) ERROR("Expected str\n", errpos(nr, PEEK(0)));
         key = nero_string_copy(*val.as_str);
-        if (PEEK(0).kind != TK_RSQUARE) {
-            fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
-            exit(1);
-        }
+        if (PEEK(0).kind != TK_RSQUARE) ERROR("Missing ']'\n", errpos(nr, PEEK(0)));
     } else {
         tok = PEEK(0);
-        if (tok.kind != TK_WORD && tok.kind != TK_STRING) {
-            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, tok));
-            exit(1);
-        }
+        if (tok.kind != TK_WORD && tok.kind != TK_STRING) ERROR("Expected word\n", errpos(nr, tok));
         key = nero_string_copy(tok.value);
     }
     ADVANCE(1);
-
     if (PEEK(0).kind == TK_EQ) {
         ADVANCE(1);
         Value val = exec_expr(nr);
-        // int idx = dict_get_index(dict.as_dict, *key);
         set_var(dict.as_dict, *key, val);
         return val;
     }
-
     Value val = get_var(dict.as_dict, *key);
-    if (val.type == T_BOOL && val.as_num == -1) {
-        fprintf(stderr, "Error: %s\nDict has no key '%.*s'\n",
-            errpos(nr, tok), key->sz, key->ptr);
-        exit(1);
-    }
+    if (val.type == T_BOOL && val.as_int == -1)
+        ERROR("Dict has no key '%.*s'\n", errpos(nr, tok), key->sz, key->ptr);
     return val;
 }
 
 void nero_check_bounds(Nero *nr, Value list, int idx) {
-    if (list.type != T_LIST && list.type != T_STRING) {
-        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
-    int size = list.type == T_STRING? list.as_str->sz : list.as_list->sz;
-    if (idx < 0 || idx >= size) {
-        fprintf(stderr, "Error: %s\nList index out of range\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (list.type != T_LIST && list.type != T_STR) ERROR("Expected list\n", errpos(nr, PEEK(0)));
+    int size = list.type == T_STR? list.as_str->sz : list.as_list->sz;
+    if (idx < 0 || idx >= size) ERROR("List index out of range\n", errpos(nr, PEEK(0)));
 }
 
 Value nero_get_index(Nero *nr, Value list, int idx) {
     nero_check_bounds(nr, list, idx);
     Value val;
-    if (list.type == T_STRING) {
+    if (list.type == T_STR) {
         String s = {.sz = 1, .ptr = &list.as_str->ptr[idx]};
-        val = nero_copy((Value){T_STRING, .as_str = nero_string_copy(s)});
+        val = nero_copy((Value){T_STR, .as_str = nero_string_copy(s)});
         return val;
     }
     val = list.as_list->ptr[idx];
@@ -1079,44 +984,23 @@ Value nero_get_index(Nero *nr, Value list, int idx) {
 
 Value exec_list_index(Nero *nr, Value list) {
     if (list.type == T_DICT) return exec_dict_key(nr, list);
-    if (list.type != T_LIST && list.type != T_STRING) {
-        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
-
+    if (list.type != T_LIST && list.type != T_STR) ERROR("Expected list\n", errpos(nr, PEEK(0)));
     Token tk = PEEK(0);
-    if (PEEK(0).kind != TK_LSQUARE) {
-        fprintf(stderr, "Error: %s\nMissing '['\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_LSQUARE) ERROR("Missing '['\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
     Value index = exec_expr(nr);
-
-    if (PEEK(0).kind != TK_RSQUARE) {
-        fprintf(stderr, "Error: %s\nMissing ']'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
-
+    if (PEEK(0).kind != TK_RSQUARE) ERROR("Missing ']'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
-    if (index.type != T_NUMBER) {
-        fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-        exit(1);
-    }
-
-    int idx = (int)index.as_num;
+    EXPECT_INT(tk, index);
+    int idx = index.as_int;
     if (PEEK(0).kind == TK_EQ) {
         ADVANCE(1);
-        if (list.type != T_LIST) {
-            fprintf(stderr, "Error: %s\nUnexpected '='\n", errpos(nr, tk));
-            exit(1);
-        }
-
+        if (list.type != T_LIST) ERROR("Unexpected '='\n", errpos(nr, tk));
         nero_check_bounds(nr, list, idx);
         Value val = exec_expr(nr);
         list.as_list->ptr[idx] = val;
         return val;
     }
-
     return nero_get_index(nr, list, idx);
 }
 
@@ -1131,33 +1015,25 @@ Value exec_term(Nero *nr) {
 }
 
 Value exec_factor(Nero *nr) {
-    switch (PEEK(0).kind) {
+    Token tk = PEEK(0);
+    switch (tk.kind) {
     case TK_MINUS: {
-        Token tk = PEEK(0);
         ADVANCE(1);
         Value ret = exec_term(nr);
-        if (ret.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
-        return (Value) {T_NUMBER, .as_num = -ret.as_num};
+        EXPECT_NUMBER(tk, ret);
+        return (Value){ret.type, { ret.type == T_INT? -ret.as_int : -ret.as_real }};
     }
     case TK_NOT: {
         ADVANCE(1);
-        return (Value) {T_BOOL, .as_num = !nero_true(exec_term(nr))};
+        return (Value) {T_BOOL, .as_int = !nero_true(exec_term(nr))};
     }
     case TK_BNOT: {
-        Token tk = PEEK(0);
         ADVANCE(1);
         Value ret = exec_term(nr);
-        if (ret.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
-        return (Value) {T_NUMBER, .as_num = (double)~(uint64_t)ret.as_num};
+        EXPECT_INT(tk, ret);
+        return (Value) {T_INT, .as_int = ~ret.as_int};
     }
-    default:
-        return exec_term(nr);
+    default: return exec_term(nr);
     }
 }
 
@@ -1167,33 +1043,25 @@ Value exec_muldiv(Nero *nr) {
     while (tk.kind == TK_MUL || tk.kind == TK_DIV || tk.kind == TK_MOD) {
         ADVANCE(1);
         Value other = exec_factor(nr);
-        if (other.type != T_NUMBER || val.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
+        EXPECT_NUMBER(tk, val); EXPECT_NUMBER(tk, other);
         switch (tk.kind) {
         case TK_MUL:
-            val.as_num *= other.as_num;
+            OPERATE_ON_NUMBER(*, val, other);
             break;
         case TK_DIV:
-            if ((int)other.as_num == 0) goto divbyzero;
-            val.as_num /= other.as_num;
+            if (GET_NUMBER(other) == 0) ERROR("Division by zero\n", errpos(nr, tk));
+            OPERATE_ON_NUMBER(/, val, other);
             break;
         case TK_MOD:
-            if ((int)other.as_num == 0) goto divbyzero;
-            val.as_num = ((int)val.as_num) % ((int)other.as_num);
+            EXPECT_INT(tk, val); EXPECT_INT(tk, other);
+            if (other.as_int == 0) ERROR("Division by zero\n", errpos(nr, tk));
+            val.as_int %= other.as_int;
             break;
-        default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
-            exit(1);
+        default: ERROR("Unexpected token\n", errpos(nr, tk));
         }
         tk = PEEK(0);
     }
     return val;
-divbyzero:
-    fprintf(stderr, "Error: %s\nDivision by zero\n", errpos(nr, tk));
-    exit(1);
-    return (Value){T_NIL}; // dum dum compiler
 }
 
 Value exec_addsub(Nero *nr) {
@@ -1202,20 +1070,12 @@ Value exec_addsub(Nero *nr) {
     while (tk.kind == TK_PLUS || tk.kind == TK_MINUS) {
         ADVANCE(1);
         Value other = exec_muldiv(nr);
-        if (other.type != T_NUMBER || val.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
+        EXPECT_NUMBER(tk, val);
+        EXPECT_NUMBER(tk, other);
         switch (tk.kind) {
-        case TK_PLUS:
-            val.as_num += other.as_num;
-            break;
-        case TK_MINUS:
-            val.as_num -= other.as_num;
-            break;
-        default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
-            exit(1);
+        case TK_PLUS:  OPERATE_ON_NUMBER(+, val, other); break;
+        case TK_MINUS: OPERATE_ON_NUMBER(-, val, other); break;
+        default: ERROR("Unexpected token\n", errpos(nr, tk));
         }
         tk = PEEK(0);
     }
@@ -1228,20 +1088,11 @@ Value exec_bitshift(Nero *nr) {
     while (tk.kind == TK_SHL || tk.kind == TK_SHR) {
         ADVANCE(1);
         Value other = exec_addsub(nr);
-        if (other.type != T_NUMBER || val.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
+        EXPECT_INT(tk, val); EXPECT_INT(tk, other);
         switch (tk.kind) {
-        case TK_SHL:
-            val.as_num = (double)((uint64_t)val.as_num << (uint64_t)other.as_num);
-            break;
-        case TK_SHR:
-            val.as_num = (double)((uint64_t)val.as_num >> (uint64_t)other.as_num);
-            break;
-        default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
-            exit(1);
+        case TK_SHL: val.as_int = val.as_int << other.as_int; break;
+        case TK_SHR: val.as_int = val.as_int >> other.as_int; break;
+        default: ERROR("Unexpected token\n", errpos(nr, tk));
         }
         tk = PEEK(0);
     }
@@ -1254,23 +1105,12 @@ Value exec_bitwise(Nero *nr) {
     while (tk.kind == TK_BAND || tk.kind == TK_BOR || tk.kind == TK_XOR) {
         ADVANCE(1);
         Value other = exec_bitshift(nr);
-        if (other.type != T_NUMBER || val.type != T_NUMBER) {
-            fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-            exit(1);
-        }
+        EXPECT_INT(tk, val); EXPECT_INT(tk, other);
         switch (tk.kind) {
-        case TK_BAND:
-            val.as_num = (double)((uint64_t)val.as_num & (uint64_t)other.as_num);
-            break;
-        case TK_BOR:
-            val.as_num = (double)((uint64_t)val.as_num | (uint64_t)other.as_num);
-            break;
-        case TK_XOR:
-            val.as_num = (double)((uint64_t)val.as_num ^ (uint64_t)other.as_num);
-            break;
-        default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
-            exit(1);
+        case TK_BAND: val.as_int = val.as_int & other.as_int; break;
+        case TK_BOR:  val.as_int = val.as_int | other.as_int; break;
+        case TK_XOR:  val.as_int = val.as_int ^ other.as_int; break;
+        default: ERROR("Unexpected token\n", errpos(nr, tk));
         }
         tk = PEEK(0);
     }
@@ -1284,25 +1124,13 @@ Value exec_compare(Nero *nr) {
         ADVANCE(1);
         Value other = exec_bitwise(nr);
         switch (tk.kind) {
-        case TK_EQEQ: {
-            val = nero_equals(val, other);
-        } break;
-        case TK_NEQ: {
-            val = nero_equals(val, other);
-            val.as_num = !val.as_num;
-        } break;
-        case TK_LT:
-        case TK_GT:
-        case TK_LEQ:
-        case TK_GEQ:
-            if (val.type != T_NUMBER || other.type != T_NUMBER) {
-                fprintf(stderr, "Error: %s\nExpected number\n", errpos(nr, tk));
-                exit(1);
-            }
+        case TK_EQEQ: val = nero_equals(val, other); break;
+        case TK_NEQ:  val = (Value){T_BOOL, .as_int = !nero_equals(val, other).as_int}; break;
+        case TK_LT: case TK_GT: case TK_LEQ: case TK_GEQ:
+            EXPECT_NUMBER(tk, val);
+            EXPECT_NUMBER(tk, other);
             return nero_compare(val, other, tk.kind);
-        default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
-            exit(1);
+        default: ERROR("Unexpected token\n", errpos(nr, tk));
         }
     }
     return val;
@@ -1315,15 +1143,9 @@ Value exec_andor(Nero *nr) {
         ADVANCE(1);
         Value other = exec_compare(nr);
         switch (tk.kind) {
-        case TK_AND:
-            val = (Value) {T_BOOL, .as_num = nero_true(val) && nero_true(other)};
-            break;
-        case TK_OR:
-            val = (Value) {T_BOOL, .as_num = nero_true(val) || nero_true(other)};
-            break;
-        default:
-            fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, tk));
-            exit(1);
+        case TK_AND: val = (Value) {T_BOOL, .as_int = nero_true(val) && nero_true(other)}; break;
+        case TK_OR:  val = (Value) {T_BOOL, .as_int = nero_true(val) || nero_true(other)}; break;
+        default: ERROR("Unexpected token\n", errpos(nr, tk));
         }
         tk = PEEK(0);
     }
@@ -1333,33 +1155,20 @@ Value exec_andor(Nero *nr) {
 Value exec_def(Nero *nr) {
     ADVANCE(1);
     Token name = PEEK(0);
-    if (name.kind != TK_WORD) {
-        fprintf(stderr, "Error: %s\nExpected function name\n", errpos(nr, name));
-        exit(1);
-    }
+    if (name.kind != TK_WORD) ERROR("Expected function name\n", errpos(nr, name));
     ADVANCE(1);
-    if (PEEK(0).kind != TK_LPAREN) {
-        fprintf(stderr, "Error: %s\nMissing '('\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
-
+    if (PEEK(0).kind != TK_LPAREN) ERROR("Missing '('\n", errpos(nr, PEEK(0)));
     VariableList args = LIST_ALLOC(Variable);
     do {
         ADVANCE(1); // '(' | ','
         if (PEEK(0).kind == TK_RPAREN) break;
-        if (PEEK(0).kind != TK_WORD) {
-            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, PEEK(0)));
-            exit(1);
-        }
+        if (PEEK(0).kind != TK_WORD) ERROR("Expected word\n", errpos(nr, PEEK(0)));
         String arg = PEEK(0).value;
         ADVANCE(1); // arg
         set_var(&args, arg, (Value){T_NIL});
     } while (PEEK(0).kind == TK_COMMA);
 
-    if (PEEK(0).kind != TK_RPAREN) {
-        fprintf(stderr, "Error: %s\nMissing ')'\n", errpos(nr, PEEK(0)));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_RPAREN) ERROR("Missing ')'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
 
     Block code = parse_block(nr);
@@ -1414,12 +1223,9 @@ Value exec_if(Nero *nr) {
         else_body = parse_block(nr);
     }
 
-    for (int i = 0; i < sz; ++i) {
-        if (conditions[i].cond)
-            return exec_block(nr, conditions[i].body);
-    }
-    if (else_body.start != -1)
-        return exec_block(nr, else_body);
+    for (int i = 0; i < sz; ++i)
+        if (conditions[i].cond) return exec_block(nr, conditions[i].body);
+    if (else_body.start != -1) return exec_block(nr, else_body);
     return (Value) {T_NIL};
 }
 
@@ -1434,9 +1240,7 @@ Value exec_while(Nero *nr) {
         res = exec_block(nr, body);
         if (nr->ret == RET_RETURN) return res;
         else if (nr->ret == RET_NEXT) nr->ret = RET_NO;
-        else if (nr->ret == RET_BREAK) {
-            nr->ret = RET_NO; break;
-        }
+        else if (nr->ret == RET_BREAK) { nr->ret = RET_NO; break; }
         nr->ip = start;
         cond = exec_expr(nr);
     }
@@ -1449,82 +1253,52 @@ Value exec_for(Nero *nr) {
     ADVANCE(1);
     Token var = PEEK(0);
     Token idx = {0};
-    if (var.kind != TK_WORD) {
-        fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, var));
-        exit(1);
-    }
+    if (var.kind != TK_WORD) ERROR("Expected word\n", errpos(nr, var));
     ADVANCE(1);
     if (PEEK(0).kind == TK_COMMA) {
         ADVANCE(1);
         idx = PEEK(0);
-        if (idx.kind != TK_WORD) {
-            fprintf(stderr, "Error: %s\nExpected word\n", errpos(nr, idx));
-            exit(1);
-        }
+        if (idx.kind != TK_WORD) ERROR("Expected word\n", errpos(nr, idx));
         ADVANCE(1);
     }
-    if (PEEK(0).kind != TK_EQ) {
-        fprintf(stderr, "Error: %s\nExpected '='\n", errpos(nr, var));
-        exit(1);
-    }
+    if (PEEK(0).kind != TK_EQ) ERROR("Expected '='\n", errpos(nr, var));
     ADVANCE(1);
     Value iter = exec_expr(nr);
     Block body = parse_block(nr);
     int sz;
 
-    if (iter.type == T_STRING || iter.type == T_LIST) {
-        sz = iter.type == T_STRING? iter.as_str->sz : iter.as_list->sz;
-    }
-    else if (iter.type == T_NUMBER) {
-        if (idx.kind != TK_EOF) {
-            fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, var));
-            exit(1);
-        }
-        sz = (int)iter.as_num;
-    }
-    else {
-        fprintf(stderr, "Error: %s\nExpected list\n", errpos(nr, var));
-        exit(1);
-    }
+    if (iter.type == T_STR || iter.type == T_LIST) {
+        sz = iter.type == T_STR? iter.as_str->sz : iter.as_list->sz;
+    } else if (iter.type == T_INT) {
+        if (idx.kind != TK_EOF) ERROR("Expected list\n", errpos(nr, var));
+        sz = iter.as_int;
+    } else ERROR("Expected list\n", errpos(nr, var));
 
     Value val;
     for (int i = 0; i < sz; ++i) {
-        Value index = (Value){T_NUMBER, .as_num = i};
-        val = (iter.type == T_NUMBER)? index : nero_get_index(nr, iter, i);
+        Value index = (Value){T_INT, .as_int = i};
+        val = (iter.type == T_INT)? index : nero_get_index(nr, iter, i);
         set_var(&nr->fn->vars, var.value, val);
-        if (idx.kind != TK_EOF)
-            set_var(&nr->fn->vars, idx.value, index);
+        if (idx.kind != TK_EOF) set_var(&nr->fn->vars, idx.value, index);
         res = exec_block(nr, body);
-        if (nr->ret == RET_RETURN) goto end;
+        if (nr->ret == RET_RETURN) return res;
         else if (nr->ret == RET_NEXT) nr->ret = RET_NO;
-        else if (nr->ret == RET_BREAK) {
-            nr->ret = RET_NO; break;
-        }
+        else if (nr->ret == RET_BREAK) { nr->ret = RET_NO; break; }
     }
-end:
     nr->ip = body.end+1;
     return res;
 }
 
 Value exec_keyword(Nero *nr) {
     switch (PEEK(0).kind) {
-    case TK_DEF:
-        return exec_def(nr);
-    case TK_RETURN:
-        return exec_return(nr);
-    case TK_BREAK:
-        return exec_break(nr, RET_BREAK);
-    case TK_NEXT:
-        return exec_break(nr, RET_NEXT);
-    case TK_IF:
-        return exec_if(nr);
-    case TK_WHILE:
-        return exec_while(nr);
-    case TK_FOR:
-        return exec_for(nr);
-    default:
-        fprintf(stderr, "Error: %s\nUnexpected token\n", errpos(nr, PEEK(0)));
-        exit(1);
+    case TK_DEF:    return exec_def(nr);
+    case TK_RETURN: return exec_return(nr);
+    case TK_BREAK:  return exec_break(nr, RET_BREAK);
+    case TK_NEXT:   return exec_break(nr, RET_NEXT);
+    case TK_IF:     return exec_if(nr);
+    case TK_WHILE:  return exec_while(nr);
+    case TK_FOR:    return exec_for(nr);
+    default: ERROR("Unexpected token\n", errpos(nr, PEEK(0)));
     }
     return (Value){T_NIL}; // dum dum compiler
 }
@@ -1536,16 +1310,14 @@ Value exec_block(Nero *nr, Block blk) {
     Value res = {T_NIL};
     while (nr->ip < blk.end && PEEK(0).kind != TK_EOF) {
         res = exec_expr(nr);
-        if (nr->ret != RET_NO)
-            break;
+        if (nr->ret != RET_NO) break;
     }
     nr->ip = ip;
     return res;
 }
 
 Value exec_expr(Nero *nr) {
-    if (PEEK(0).kind >= TK_DEF && PEEK(0).kind <= TK_NEXT)
-        return exec_keyword(nr);
+    if (PEEK(0).kind >= TK_DEF && PEEK(0).kind <= TK_NEXT) return exec_keyword(nr);
     return exec_andor(nr);
 }
 
@@ -1558,20 +1330,17 @@ int main(int argc, char **argv) {
     args_list = (ValueList) LIST_ALLOC(Value);
     for (int i = 1; i < argc; ++i) {
         String s = {.sz = strlen(argv[i]), .ptr = argv[i]};
-        Value arg = {T_STRING, .as_str = nero_string_copy(s)};
+        Value arg = {T_STR, .as_str = nero_string_copy(s)};
         LIST_PUSH(args_list, nero_copy(arg));
     }
 
     Nero nero = {0};
     String file = {.sz = strlen(argv[1]), .ptr = argv[1]};
-    Function global = {
-        .name = {.alloc = 0, .sz = 8, .ptr = "<global>"},
-    };
+    Function global = { .name = {.alloc = 0, .sz = 8, .ptr = "<global>"} };
     nero.fn = &global;
     tokenize(&nero, file);
     nero_init_foreign(&nero);
     global.code = (Block) {0, nero.code.sz};
     nero_call(&nero, global);
-    for (int i = 0; i < args_list.sz; ++i)
     return 0;
 }
