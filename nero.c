@@ -510,10 +510,12 @@ Value nero_echo(int argc, Value *argv) {
 Value nero_read(int argc, Value *argv) {
     for (int i = 0; i < argc; ++i) nero_print(argv[i], 0);
     char *l = NULL; size_t n = 0;
-    getline(&l, &n, stdin);
+    int res = getline(&l, &n, stdin);
     String *str = nero_string_alloc();
-    nero_string_concatp(str, l);
-    LIST_POPP(str); // remove last \n
+    if (res != -1) {
+        nero_string_concatp(str, l);
+        LIST_POPP(str); // remove last \n
+    }
     return (Value) {T_STR, .as_str = str};
 }
 
