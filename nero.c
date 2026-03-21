@@ -157,7 +157,8 @@ static inline Token next_token(FILE *fp, int file) {
             LIST_PUSH(tok.value, c); c = fgetc(fp);
             if (tok.value.ptr[0] == '0' && (c == 'x' || c == 'X')) {
                 do {
-                    LIST_PUSH(tok.value, c); c = fgetc(fp);
+                    LIST_PUSH(tok.value, c);
+                    c = fgetc(fp);
                 } while (c != EOF && isxdigit(c));
                 break;
             }
@@ -170,11 +171,8 @@ static inline Token next_token(FILE *fp, int file) {
         tok.value = STRALLOC();
         do {
             c = fgetc(fp);
-            if (c == '\\') {
-                LIST_PUSH(tok.value, escape(fgetc(fp)));
-            } else {
-                LIST_PUSH(tok.value, c);
-            }
+            if (c == '\\') LIST_PUSH(tok.value, escape(fgetc(fp)));
+            else LIST_PUSH(tok.value, c);
         } while (c != EOF && c != match);
         LIST_POP(tok.value); // remove last quote
         return tok; // don't unget last quote
@@ -226,10 +224,8 @@ void tokenize(Nero *nr, String file) {
     int cur_line = line, cur_file = files.sz;
     char str[1024] = {0};
 
-    for (int f = 0; f < files.sz; ++f) {
-        if (STRCMPS(files.ptr[f], file))
-            return;
-    }
+    for (int f = 0; f < files.sz; ++f)
+        if (STRCMPS(files.ptr[f], file)) return;
 
     LIST_PUSH(files, file);
     memcpy(str, file.ptr, file.sz);
@@ -267,6 +263,12 @@ fail:
 #define ADVANCE(n) nr->ip += n
 #define INBOUND() nr->ip < nr->code.sz
 
+#define EXPECT_INT(T, A) if ((A).type != T_INT) ERROR("Expected int\n", errpos(nr, (T)));
+#define EXPECT_NUMBER(T, A) if ((A).type != T_REAL) EXPECT_INT(T, A)
+#define GET_NUMBER(N) ((N).type == T_REAL)? ((N).as_real) : ((N).as_int)
+#define OPERATE_ON_NUMBER(OP, A, B) \
+    if ((A).type == T_REAL) (A).as_real OP##= GET_NUMBER(B); else (A).as_int OP##= GET_NUMBER(B);
+
 Value exec_expr(Nero *nr);
 Value exec_block(Nero *nr, Block blk);
 static inline void free_vars(VariableList *vars);
@@ -277,8 +279,7 @@ Value nero_keys(int argc, Value *argv);
 static inline char *errpos(Nero *nr, Token tk) {
     char err[1024];
     String fn = nr->fn->name, fl = files.ptr[tk.file];
-    sprintf(err, "(file \"%.*s\", line %d, in \"%.*s\")",
-        fl.sz, fl.ptr, tk.line, fn.sz, fn.ptr);
+    sprintf(err, "(file \"%.*s\", line %d, in \"%.*s\")", fl.sz, fl.ptr, tk.line, fn.sz, fn.ptr);
     return strdup(err);
 }
 
@@ -383,8 +384,7 @@ Value nero_equals(Value a, Value b) {
     if (a.type != b.type) return res;
     switch (a.type) {
     case T_NIL:  res.as_int = 1; break;
-    case T_BOOL:
-    case T_INT:  res.as_int = a.as_int == b.as_int; break;
+    case T_BOOL: case T_INT: res.as_int = a.as_int == b.as_int; break;
     case T_REAL: res.as_int = a.as_real == b.as_real; break;
     case T_STR:  res.as_int = STRCMPSP(a.as_str, b.as_str); break;
     case T_LIST:
@@ -415,11 +415,16 @@ Value nero_equals(Value a, Value b) {
 
 Value nero_compare(Value a, Value b, uint8_t k) {
     Value res = {T_BOOL, .as_int = 0};
+    int is_real = 0;
+    int64_t ia, ib; double fa, fb;
+    if (a.type == T_REAL || b.type == T_REAL) is_real = 1;
+    if (!is_real) ia = GET_NUMBER(a), ib = GET_NUMBER(b);
+    else fa = GET_NUMBER(a), fb = GET_NUMBER(b);
     switch (k) {
-    case TK_LT:  res.as_int = a.as_int <  b.as_int; break;
-    case TK_LEQ: res.as_int = a.as_int <= b.as_int; break;
-    case TK_GT:  res.as_int = a.as_int >  b.as_int; break;
-    case TK_GEQ: res.as_int = a.as_int >= b.as_int; break;
+    case TK_LT:  res.as_int = is_real? (fa <  fb) : (ia <  ib); break;
+    case TK_LEQ: res.as_int = is_real? (fa <= fb) : (ia <= ib); break;
+    case TK_GT:  res.as_int = is_real? (fa >  fb) : (ia >  ib); break;
+    case TK_GEQ: res.as_int = is_real? (fa >= fb) : (ia >= ib); break;
     default: break;
     }
     return res;
@@ -428,9 +433,8 @@ Value nero_compare(Value a, Value b, uint8_t k) {
 Value nero_copy(Value val) {
     Value res = {val.type};
     switch (val.type) {
-    case T_BOOL:
-    case T_INT:
-    case T_REAL: res.as_int = val.as_int; break;
+    case T_BOOL: case T_INT: case T_REAL:
+        res.as_int = val.as_int; break;
     case T_STR:  res.as_str = nero_string_copy(*val.as_str); break;
     case T_LIST:
         res.as_list = nero_list_allocn(val.as_list->alloc);
@@ -772,13 +776,6 @@ fail:
     return (Function) {.code = {-1}};
 }
 
-#define EXPECT_INT(T, A) if ((A).type != T_INT) ERROR("Expected int\n", errpos(nr, (T)));
-#define EXPECT_NUMBER(T, A) if ((A).type != T_REAL) EXPECT_INT(T, A)
-
-#define GET_NUMBER(N) (N).type == T_REAL? (N).as_real : (N).as_int
-#define OPERATE_ON_NUMBER(OP, A, B) \
-    if ((A).type == T_REAL) (A).as_real OP##= GET_NUMBER(B); else (A).as_int OP##= GET_NUMBER(B);
-
 Value exec_number(Nero *nr) {
     Value val;
     if (strchr(PEEK(0).value.ptr, '.'))
@@ -832,7 +829,7 @@ Value exec_assign(Nero *nr) {
     String var = PEEK(0).value;
     ADVANCE(2);
     Value res = exec_expr(nr);
-    if (STRCMPP(nr->fn->name, "<global>")) set_var(&nr->vars, var, res);
+    if (STRCMPP(nr->fn->name, GLOBAL_SCOPE)) set_var(&nr->vars, var, res);
     else set_var(&nr->fn->vars, var, res);
     return res;
 }
@@ -1338,7 +1335,7 @@ int main(int argc, char **argv) {
 
     Nero nero = {0};
     String file = {.sz = strlen(argv[1]), .ptr = argv[1]};
-    Function global = { .name = {.alloc = 0, .sz = 8, .ptr = "<global>"} };
+    Function global = { .name = {.alloc = 0, .sz = 8, .ptr = GLOBAL_SCOPE} };
     nero.fn = &global;
     tokenize(&nero, file);
     nero_init_foreign(&nero);
