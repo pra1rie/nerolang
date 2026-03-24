@@ -129,7 +129,7 @@ These operators:
 &   ^   |   <<  >>
 ```
 
-7 types:
+8 types:
 * nil
 * bool
 * int
@@ -137,6 +137,7 @@ These operators:
 * str
 * list
 * dict
+* func
 
 And these builtin functions:
 ```
@@ -200,9 +201,10 @@ echo(dict)
 
 Nero's operators are evaluated in this order (highest precedence first):
 ```
-    ( )
--- field accessors:
-    . [ ]
+-- parentheses as expression separators:
+    ()
+-- field accessors and function calls:
+    . [] ()
 -- unary operators:
     ! ~ -
 -- binary operators:
