@@ -1,45 +1,53 @@
-# this is just the example from the README.
+# this version has comments! (although only single-line)
 
-def string_to_number(str) {
-    num = i = 0
-    while (i = i + 1) <= len(str) {
-        num = num * 10 + (ord(str[i-1]) - ord("0"))
+def find(list, fn) {
+    # it has first-class functions!!!
+    for item = list {
+        if fn(item) {
+            return item
+        }
     }
-    return num
+    return nil
 }
 
-# you can also just call the builtin 'number' function
-val = string_to_number(read("input a number: "))
-
-if val == 69 || val == 420 {
-    echo("nice")
-} elif val == 67 {
-    echo("bruh")
-} else {
-    echo("boring")
+def new_item(type, name) {
+    # this here is a dictionary
+    return { type = type, name = name }
 }
 
-list = []
-
-# this line shouldn't be executed
-if val && list != [] { echo("UwU") }
-
-push(list, val)
-push(list, list)
-list[0] = 8008135
-echo("len(", list, ") = ", len(list))
-pop(list[1])
-
-dict = {
-    'list' = list,
-    value = val,
+def item_compare(a, b) {
+    return a.type == b.type && a.name == b.name
 }
 
-push(dict.list, range("some text", 0, 3))
-
-# dictionary keys can only be strings and may be accessed by dict.key, dict."key" or dict["key"]
-for value, i = dict["list"] {
-    echo("list[", i, "] = ", value)
+def new_slot(item) {
+    return { item = item, amount = 1 }
 }
 
-echo(dict)
+def new_inventory() {
+    return { slots = [] }
+}
+
+def inventory_add(inv, item) {
+    # look at this beautiful anonymous function!!!!!!!!!!!1111!
+    slot = find(inv.slots, def(s) { item_compare(s.item, item) })
+    if slot != nil {
+        slot.amount = slot.amount + 1
+    } else {
+        push(inv.slots, new_slot(item))
+    }
+}
+
+inv = new_inventory()
+# add some arbitrary items
+inventory_add(inv, new_item('food', 'apple'))
+inventory_add(inv, new_item('food', 'banana'))
+inventory_add(inv, new_item('food', 'pineapple'))
+inventory_add(inv, new_item('food', 'apple'))
+inventory_add(inv, new_item('food', 'banana'))
+inventory_add(inv, new_item('food', 'apple'))
+inventory_add(inv, new_item('food', 'apple'))
+
+for slot = inv.slots {
+    echo(slot.item.type, ': ', slot.item.name, ' x', slot.amount)
+}
+
