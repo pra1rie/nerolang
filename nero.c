@@ -27,9 +27,8 @@ enum {
     TK_WHILE, TK_FOR, TK_BREAK, TK_NEXT, TK_IMPORT,
 };
 
-// XXX: implement pow '**', first-class functions, proper garbage collector, error type
+// XXX: implement pow '**', proper garbage collector, error type
 // XXX: some way to call more foreign functions at runtime
-// XXX: basic ranges (eg. str[1, 5] (str from 1..5); str[3, -1] (str from 3..length-1))
 
 #define GLOBAL_SCOPE "<global>"
 #define MAX_CONDITIONS 1024
@@ -62,7 +61,7 @@ typedef LIST(struct Variable) VariableList;
 typedef LIST(struct Function) FunctionList;
 typedef LIST(Foreign) ForeignList;
 
-enum { T_NIL, T_BOOL, T_INT, T_REAL, T_STR, T_LIST, T_DICT };
+enum { T_NIL, T_BOOL, T_INT, T_REAL, T_STR, T_LIST, T_DICT, T_FUNC };
 typedef struct Value {
     uint8_t type;
     union {
@@ -71,6 +70,7 @@ typedef struct Value {
         String *as_str;
         ValueList *as_list;
         VariableList *as_dict;
+        struct Function *as_func;
     };
 } Value;
 
@@ -87,13 +87,13 @@ typedef struct Function {
     String name;
     VariableList vars;
     Block code;
+    int arity;
 } Function;
 
 typedef struct {
     int ip, ret;
     TokenList code;
     VariableList vars;
-    FunctionList funs;
     ForeignList extn;
     Function *fn;
 } Nero;
@@ -265,14 +265,14 @@ fail:
 #define EXPECT_INT(T, A) if ((A).type != T_INT) ERROR("%s\nExpected int\n", errpos(nr, (T)));
 #define EXPECT_NUMBER(T, A) if ((A).type != T_REAL) EXPECT_INT(T, A)
 #define GET_NUMBER(N) ((N).type == T_REAL)? ((N).as_real) : ((N).as_int)
-#define OPERATE_ON_NUMBER(OP, A, B) \
-    if ((A).type == T_REAL || (B).type == T_REAL) \
+#define OPERATE_ON_NUMBER(OP, A, B) if ((A).type == T_REAL || (B).type == T_REAL) \
         (A) = (Value) { T_REAL, .as_real = (double)(GET_NUMBER(A)) OP (GET_NUMBER(B)) }; \
     else (A).as_int OP##= (B).as_int;
 
 Value exec_expr(Nero *nr);
 Value exec_block(Nero *nr, Block blk);
 static inline void free_vars(VariableList *vars);
+static inline VariableList copy_vars(VariableList *vars);
 void set_var(VariableList *vars, String name, Value val);
 Value get_var(VariableList *vars, String name);
 Value nero_keys(int argc, Value *argv);
@@ -356,6 +356,15 @@ Value nero_string(Value val, int escape) {
         }
         nero_string_concatp(str, "}");
         break;
+    case T_FUNC:
+        nero_string_concats(str, &val.as_func->name);
+        nero_string_concatp(str, "(");
+        for (int i = 0; i < val.as_func->arity; ++i) {
+            if (i > 0) nero_string_concatp(str, ", ");
+            nero_string_concats(str, &val.as_func->vars.ptr[i].name);
+        }
+        nero_string_concatp(str, ")");
+        break;
     default:
         nero_string_concatp(str, "nil");
         break;
@@ -376,6 +385,7 @@ int nero_true(Value v) {
     case T_STR:  return v.as_str->sz;
     case T_LIST: return v.as_list->sz;
     case T_DICT: return v.as_dict->sz;
+    case T_FUNC: return 1;
     default: return 0;
     }
 }
@@ -410,6 +420,11 @@ Value nero_equals(Value a, Value b) {
             }
         }
         break;
+    case T_FUNC:
+        res.as_int = a.as_func->code.start == b.as_func->code.start
+                    && a.as_func->code.end == b.as_func->code.end
+                    && a.as_func->vars.sz == b.as_func->vars.sz;
+        break;
     }
     return res;
 }
@@ -436,7 +451,7 @@ Value nero_copy(Value val) {
     switch (val.type) {
     case T_BOOL: case T_INT: case T_REAL:
         res.as_int = val.as_int; break;
-    case T_STR:  res.as_str = nero_string_copy(*val.as_str); break;
+    case T_STR: res.as_str = nero_string_copy(*val.as_str); break;
     case T_LIST:
         res.as_list = nero_list_allocn(val.as_list->alloc);
         for (int i = 0; i < val.as_list->sz; ++i)
@@ -449,6 +464,13 @@ Value nero_copy(Value val) {
             String *s = nero_string_copy(val.as_dict->ptr[i].name);
             set_var(res.as_dict, *s, val.as_dict->ptr[i].value);
         }
+        break;
+    case T_FUNC:
+        res.as_func = malloc(sizeof(Function));
+        res.as_func->name = *nero_string_copy(val.as_func->name);
+        res.as_func->arity = val.as_func->arity;
+        res.as_func->vars = copy_vars(&val.as_func->vars);
+        res.as_func->code = val.as_func->code;
         break;
     }
     return res;
@@ -468,6 +490,7 @@ static inline String type_to_string(uint8_t type) {
     case T_STR:  nero_string_concatp(&str, "str"); break;
     case T_LIST: nero_string_concatp(&str, "list"); break;
     case T_DICT: nero_string_concatp(&str, "dict"); break;
+    case T_FUNC: nero_string_concatp(&str, "def"); break;
     default:     nero_string_concatp(&str, "nil"); break;
     }
     return str;
@@ -736,6 +759,10 @@ static inline VariableList copy_vars(VariableList *vars) {
 }
 
 void set_var(VariableList *vars, String name, Value val) {
+    if (val.type == T_FUNC) {
+        val = nero_copy(val);
+        val.as_func->name = name;
+    }
     if (!vars->alloc) *vars = (VariableList) LIST_ALLOC(Variable);
     for (int i = 0; i < vars->sz; ++i) {
         if (STRCMPS(vars->ptr[i].name, name)) {
@@ -765,16 +792,6 @@ Value nero_call(Nero *nr, Function fn) {
     nr->ret = RET_NO;
     nr->fn = fp;
     return res;
-}
-
-Function get_fun(FunctionList *funs, String name) {
-    if (!funs->alloc) goto fail;
-    for (int i = 0; i < funs->sz; ++i) {
-        if (STRCMPS(funs->ptr[i].name, name))
-            return funs->ptr[i];
-    }
-fail:
-    return (Function) {.code = {-1}};
 }
 
 Value exec_number(Nero *nr) {
@@ -835,7 +852,7 @@ Value exec_assign(Nero *nr) {
     return res;
 }
 
-static Value call_foreign(Nero *nr, Token tok, Value args) {
+static Value exec_call_foreign(Nero *nr, Token tok, Value args) {
     Value res = {T_NIL};
     for (int i = 0; i < nr->extn.sz; ++i) {
         if (STRCMPP(tok.value, nr->extn.ptr[i].name)) {
@@ -847,9 +864,7 @@ static Value call_foreign(Nero *nr, Token tok, Value args) {
     return (Value){T_NIL}; // dum dum compiler
 }
 
-Value exec_call(Nero *nr) {
-    Token tok = PEEK(0);
-    ADVANCE(1);
+Value exec_func_args(Nero *nr) {
     Value args = {T_LIST, .as_list = nero_list_alloc()};
     do {
         ADVANCE(1); // '(' | ','
@@ -859,19 +874,7 @@ Value exec_call(Nero *nr) {
     } while (PEEK(0).kind == TK_COMMA);
     if (PEEK(0).kind != TK_RPAREN) ERROR("%s\nMissing ')'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
-    Function fn;
-    if ((fn = get_fun(&nr->funs, tok.value)).code.start == -1)
-        return call_foreign(nr, tok, args);
-    if (fn.vars.sz != args.as_list->sz)
-        ERROR("%s\nFunction '%.*s' expects %d argument(s), got %d\n",
-            errpos(nr, tok), tok.value.sz, tok.value.ptr, fn.vars.sz, args.as_list->sz);
-    VariableList vars = fn.vars, copy = copy_vars(&fn.vars);
-    fn.vars = copy;
-    for (int i = 0; i < fn.vars.sz; ++i)
-        set_var(&fn.vars, fn.vars.ptr[i].name, args.as_list->ptr[i]);
-    Value res = nero_call(nr, fn);
-    fn.vars = vars;
-    return res;
+    return args;
 }
 
 Block parse_block(Nero *nr) {
@@ -894,13 +897,20 @@ Block parse_block(Nero *nr) {
 Value exec_variable(Nero *nr) {
     Token var = PEEK(0);
     if (PEEK(1).kind == TK_EQ) return exec_assign(nr);
-    if (PEEK(1).kind == TK_LPAREN) return exec_call(nr);
-    ADVANCE(1);
     Value res = get_var(&nr->fn->vars, var.value);
     if (res.type == T_BOOL && res.as_int == -1)
         res = get_var(&nr->vars, var.value);
-    if (res.type == T_BOOL && res.as_int == -1)
+    if (res.type == T_BOOL && res.as_int == -1) {
+        // if variable doesn't exist, but still has a parenthesis
+        // try calling a foreign function
+        if (PEEK(1).kind == TK_LPAREN) {
+            ADVANCE(1);
+            Value args = exec_func_args(nr);
+            return exec_call_foreign(nr, var, args);
+        }
         ERROR("%s\nUndefined variable '%.*s'\n", errpos(nr, var), var.value.sz, var.value.ptr);
+    }
+    ADVANCE(1);
     return res;
 }
 
@@ -1004,11 +1014,29 @@ Value exec_list_index(Nero *nr, Value list) {
     return nero_get_index(nr, list, idx);
 }
 
+Value exec_func_call(Nero *nr, Value func) {
+    if (func.type != T_FUNC) ERROR("%s\nExpected func\n", errpos(nr, PEEK(0)));
+    Token pos = PEEK(0);
+    Value args = exec_func_args(nr);
+    Function fn = *func.as_func;
+    if (fn.arity != args.as_list->sz)
+        ERROR("%s\nFunction '%.*s' expects %d argument(s), got %d\n",
+            errpos(nr, pos), fn.name.sz, fn.name.ptr, fn.arity, args.as_list->sz);
+    VariableList vars = fn.vars, copy = copy_vars(&fn.vars);
+    fn.vars = copy;
+    for (int i = 0; i < fn.arity; ++i)
+        set_var(&fn.vars, fn.vars.ptr[i].name, args.as_list->ptr[i]);
+    Value res = nero_call(nr, fn);
+    fn.vars = vars;
+    return res;
+}
+
 Value exec_term(Nero *nr) {
     Value val = exec_primary(nr);
     while (1) {
         if (PEEK(0).kind == TK_LSQUARE) val = exec_list_index(nr, val);
         else if (PEEK(0).kind == TK_DOT) val = exec_dict_key(nr, val);
+        else if (PEEK(0).kind == TK_LPAREN) val = exec_func_call(nr, val);
         else break;
     }
     return val;
@@ -1154,9 +1182,13 @@ Value exec_andor(Nero *nr) {
 
 Value exec_def(Nero *nr) {
     ADVANCE(1);
-    Token name = PEEK(0);
-    if (name.kind != TK_WORD) ERROR("%s\nExpected function name\n", errpos(nr, name));
-    ADVANCE(1);
+    String name = { .alloc = 0, .sz = 11, .ptr = "<anonymous>" };
+    int is_anonymous = 1;
+    if (PEEK(0).kind == TK_WORD) {
+        is_anonymous = 0;
+        name = PEEK(0).value;
+        ADVANCE(1);
+    }
     if (PEEK(0).kind != TK_LPAREN) ERROR("%s\nMissing '('\n", errpos(nr, PEEK(0)));
     VariableList args = LIST_ALLOC(Variable);
     do {
@@ -1170,24 +1202,25 @@ Value exec_def(Nero *nr) {
 
     if (PEEK(0).kind != TK_RPAREN) ERROR("%s\nMissing ')'\n", errpos(nr, PEEK(0)));
     ADVANCE(1);
-
     Block code = parse_block(nr);
-    Function fn = {
-        .name = name.value,
-        .code = code,
-        .vars = args,
-    };
-
-    if (!nr->funs.alloc) nr->funs = (FunctionList) LIST_ALLOC(Function);
-    for (int i = 0; i < nr->funs.sz; ++i) {
-        if (STRCMPS(nr->funs.ptr[i].name, fn.name)) {
-            nr->funs.ptr[i] = fn;
-            goto end;
+    Function *fn = malloc(sizeof(Function));
+    fn->name = name;
+    fn->code = code;
+    fn->vars = args;
+    fn->arity = args.sz;
+    Value val = {T_FUNC, .as_func = fn};
+    if (!is_anonymous) {
+        if (STRCMPP(nr->fn->name, GLOBAL_SCOPE)) set_var(&nr->vars, name, val);
+        else set_var(&nr->fn->vars, name, val);
+    } else {
+        // copy all local variables to anonymous functions
+        for (int i = 0; i < nr->fn->vars.sz; ++i) {
+            Value v = get_var(&fn->vars, nr->fn->vars.ptr[i].name);
+            if (v.type == T_BOOL && v.as_int == -1)
+                set_var(&fn->vars, nr->fn->vars.ptr[i].name, nr->fn->vars.ptr[i].value);
         }
     }
-    LIST_PUSH(nr->funs, fn);
-end:
-    return (Value) {T_NIL};
+    return val;
 }
 
 Value exec_return(Nero *nr) {
