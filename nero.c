@@ -520,7 +520,8 @@ Value nero_number(int argc, Value *argv) {
     EXPECT_TYPE(argv[0], T_STR);
     int found_dot = 0;
     char *str = strndup(argv[0].as_str->ptr, argv[0].as_str->sz);
-    for (int i = 0; i < argv[0].as_str->sz; ++i) {
+    int s = argv[0].as_str->sz > 1 && strchr("+-", argv[0].as_str->ptr[0])? 1 : 0;
+    for (int i = s; i < argv[0].as_str->sz; ++i) {
         if (!(isdigit(str[i]) || str[i] == '.') || (str[i] == '.' && found_dot))
             ERROR("Invalid number '%s'\n", str);
         if (str[i] == '.') found_dot = 1;
