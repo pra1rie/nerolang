@@ -1,5 +1,7 @@
+CFLAGS = -Wall -Werror
+
 all:
-	$(CC) -O2 nero.c -o nero -lgc
+	$(CC) -O2 nero.c -o nero -lgc $(CFLAGS)
 
 install: all
 	install -s nero /usr/local/bin
