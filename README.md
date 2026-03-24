@@ -12,7 +12,7 @@ as an exercise for writing different implementations and extending upon them.
 
 See [the original language](./ORIGINAL.md).
 
-## C Implementation
+# C Implementation
 
 Although a very naïve, slow, buggy implementation, the version in this repository
 improves on the base language quite a bit.
@@ -172,3 +172,8 @@ The most annoying ones i can remember from the top of my head are:
 * It's too goddamn slow (i implemented it using the same method as the original version, by tokenizing the input text and executing it token by token, which is pretty dumb).
 * Memory management is genuinely retarded.
 * The language overall is kinda shit (its fun to use tho).
+
+# License
+
+MIT.
+
