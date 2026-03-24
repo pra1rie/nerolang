@@ -5,13 +5,41 @@
 #include <stdio.h>
 #include <gc.h>
 
-#include "nlist.h"
-#include "nstring.h"
-
 #define malloc(X) GC_MALLOC(X)
 #define calloc(X, Y) GC_MALLOC(X * Y)
 #define realloc(X, Y) GC_REALLOC(X, Y)
 #define free(X) GC_FREE(X)
+
+#define _NERO_LIST_ALLOC_SIZE 1024
+#define _NERO_STRING_ALLOC_SIZE 1024
+#define LENGTH(x) (sizeof(x) / sizeof((x)[0]))
+
+#define LIST(T) struct { int alloc, sz; T *ptr; }
+#define LIST_EMPTY() { .alloc = 0, .sz = 0, .ptr = NULL }
+#define LIST_ALLOCN(T, N) { .alloc = N, .sz = 0, .ptr = malloc(N*sizeof(T)) }
+#define LIST_ALLOC(T) LIST_ALLOCN(T, _NERO_LIST_ALLOC_SIZE)
+#define LIST_FREE_OP(l, op) do { free(l op ptr); l op ptr = NULL; l op alloc = l op sz = 0; } while(0)
+#define LIST_PUSH_OP(l, v, op) do { if (((l) op sz)+1 >= (l) op alloc) (l) op ptr = realloc((l) op ptr, \
+                        ((l) op alloc += _NERO_LIST_ALLOC_SIZE)*sizeof(((l) op ptr)[0])); \
+                        (l) op ptr[(l) op sz++] = v; } while(0)
+#define LIST_POP_OP(l, op) do { (--(l) op sz); } while(0)
+#define LIST_FREE(l) LIST_FREE_OP(l, .)
+#define LIST_FREEP(l) LIST_FREE_OP(l, ->)
+#define LIST_PUSH(l, v) LIST_PUSH_OP(l, v, .)
+#define LIST_PUSHP(l, v) LIST_PUSH_OP(l, v, ->)
+#define LIST_POP(l) LIST_POP_OP(l, .)
+#define LIST_POPP(l) LIST_POP_OP(l, ->)
+
+typedef LIST(char) String;
+
+#define STRALLOC() (String) STRALLOCN(_NERO_STRING_ALLOC_SIZE)
+#define STRALLOCN(N) (String) LIST_ALLOCN(char, N)
+#define STRCMPP_OP(a, b, op) ((a) op sz == strlen(b) && !strncmp((a) op ptr, b, (a) op sz))
+#define STRCMPS_OP(a, b, op) ((a) op sz == (b) op sz && !strncmp((a) op ptr, (b) op ptr, (a) op sz))
+#define STRCMPP(a, b) STRCMPP_OP(a, b, .)
+#define STRCMPPP(a, b) STRCMPP_OP(a, b, ->)
+#define STRCMPS(a, b) STRCMPS_OP(a, b, .)
+#define STRCMPSP(a, b) STRCMPS_OP(a, b, ->)
 
 #define ERROR(...) do { fprintf(stderr, "Error: "__VA_ARGS__); exit(1); } while(0)
 
