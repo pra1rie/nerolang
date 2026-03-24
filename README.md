@@ -1,4 +1,5 @@
 # Nero
+
 Implementation of my teeny tiny little toy language in ~1.5k lines of C.
 
 It was one of my very first interpreters, written in [D](https://dlang.org)
@@ -9,108 +10,9 @@ and then my computer fucking died and I don't even have that anymore.
 Thankfully the language was simple enough, so I used it as a reference
 as an exercise for writing different implementations and extending upon them.
 
-# Original language
+See [the original language](./ORIGINAL.md).
 
-The original implementation only had the following keywords:
-```
-def      echo     elif       else       exit     if
-import   let      read       return     system   while
-```
-
-These operators:
-```
-(   )   [   ]   {   }   ,
-+   -   *   /   !   =   <
->   <=  >=  !=  ==
-```
-
-> I actually don't remember if it had '&&' and '||'.
-
-And the following types:
-* nil
-* bool
-* number
-* string
-* list
-
-It was dynamically-typed, and everything was considered an expression.
-
-## Quirks
-
-It had 3 ways of assigning to variables:
-```
-let name value
-let name = value
-name = value
-```
-
-`let name value` was the first assignment expression I added, which i then turned into
-`let name = value`, and then allowed for assigning without the `let` keyword, making
-it redundant, but I still left it there for no reason in particular.
-
-The builtins `echo`, `exit`, `read` and `system` were first implemented as keywords
-instead of builtin functions (because there weren't any) and needed no parentheses.
-
-There were no comments, no for loops, and no way to break out of while loops.
-
-The interpreter did not evaluate code until it was reached, and that could be used as comments.
-The interpreter would not complain as long as they got properly tokenized.
-
-```
-def __() { this is a stupid comment, dont call this function }
-if 0 {
-    this here is a multi-line comment
-    it wont get executed
-}
-```
-
-Everything was an expression, but not everything returned a valid value. Anything that wasn't supposed
-to return a value would return `nil` (namely, `def`, `import`, `echo`, `system`, `exit`).
-There were also no closures or first-class functions.
-
-Lists were one of the last things I added before losing the source code, and there was no way
-to get the length, append or remove things from them. They merely existed.
-
-## Example code
-
-There isn't much to show:
-
-```
-def min(a, b) {
-    if 0 { the last expression always gets returned }
-    if a < b { a } else { b }
-}
-
-echo "Hello, World!"
-let a = read "Input a number: "
-if 0 { this syntax looks so goofy and i hate it }
-let b read "Input another number: "
-
-if 0 { this type of assignment looks so much cleaner, wow }
-c = min(a, b)
-
-echo "min(", a, ", ", b, ") = ", min(a, b)
-
-list = [a, b, c]
-if 0 { you can modify existing values, but cant append anything to it lmfao }
-list[0] = false
-echo list
-
-i = 0
-while (i = i + 1) < 6 {
-    echo i
-}
-
-a = system "echo 'This is an external command'"
-if a == nil {
-    exit
-
-    system always returns nil, and exit always exits (supposedly)
-    so the interpreter shouldnt even try executing this part
-}
-```
-
-# C Implementation
+## C Implementation
 
 Although a very naïve, slow, buggy implementation, the version in this repository
 improves on the base language quite a bit.
@@ -146,55 +48,94 @@ len         number   ord        pop      push     range   read
 read_file   split    string     system   typeof   write_file
 ```
 
-## Example code
+## Basic Syntax
 
-There still isn't much to show:
+### Variables and types
+
 ```
-# this version has comments!
+# this is a comment
+int_var = 69
+real_var = 420.69
+str_var = "Hello, world!"
+bool_var = true || false && !nil
+list_var = [0, 1, 2, 3, nil, 'some text', false, 0.5]
+dict_var = { key = 'value', "other key" = 80085 }
+```
 
-def string_to_number(str) {
-    num = i = 0
-    while (i = i + 1) <= len(str) {
-        num = num * 10 + (ord(str[i-1]) - ord("0"))
-    }
-    return num
-}
+### Conditions and loops
 
-# you can also just call the builtin 'number' function
-val = string_to_number(read("input a number: "))
-
-if val == 69 || val == 420 {
-    echo("nice")
-} elif val == 67 {
-    echo("bruh")
+```
+# falsey values are 'nil', 'false', empty list, empty string, empty dict
+# everything else is true
+val = nil
+if !val {
+    echo('value is falsey')
 } else {
-    echo("boring")
+    echo('value is truthy')
 }
 
-list = []
-
-# this line shouldn't be executed
-if val && list != [] { echo("UwU") }
-
-push(list, val)
-push(list, list)
-list[0] = 8008135
-echo("len(", list, ") = ", len(list))
-pop(list[1])
-
-dict = {
-    'list' = list,
-    value = val,
+# count from 1 to 10, skip 3 and break on 8
+i = 0
+while i < 10 {
+    i = i + 1
+    if i == 3 {
+        next
+    }
+    if i == 8 {
+        break
+    }
+    echo(i)
 }
 
-push(dict.list, range("some text", 0, 3))
-
-# dictionary keys can only be strings and may be accessed by dict.key, dict."key" or dict["key"]
-for value, i = dict["list"] {
-    echo("list[", i, "] = ", value)
+list = [1, 2, 3, 4, 5, 6]
+for value, index = list {
+    list[index] = value * 2
+    echo('list[', index, '] = ', value)
 }
 
-echo(dict)
+for i = len(list) {
+    echo(list[i])
+}
+
+```
+
+### Functions
+
+```
+def sum_all(list) {
+    result = 0
+    for value = list {
+        result = result + value
+    }
+    return result
+}
+
+echo(sum_all([1, 2, 3, 4, 5, 6, 7, 8, 9]))
+
+double = def(x) { return x * 2 }
+echo(double(34.5))
+
+def find(list, fn) {
+    for item = list {
+        if fn(item) { return item }
+    }
+    return nil
+}
+
+def make_item(name, amount) {
+    return { name = name, amount = amount }
+}
+
+grocery_list = [
+    make_item('apples', 50403),
+    make_item('tomatoes', 33),
+    make_item('rubber tire', 5),
+]
+
+apples = find(grocery_list, def(itm) { itm.name == 'apples' })
+if apples != nil {
+    echo('must buy ', apples.amount, ' ', apples.name)
+}
 ```
 
 ## Operator Precedence
