@@ -19,8 +19,8 @@ improves on the base language quite a bit.
 
 It has a minimal set of keywords:
 ```
-break   def      elif    else     if
-for     import   next    return   while
+break    def    elif   else     false   for     if
+import   next   nil    return   true    while
 ```
 
 These operators:
@@ -96,7 +96,6 @@ for value, index = list {
 for i = len(list) {
     echo(list[i])
 }
-
 ```
 
 ### Functions
