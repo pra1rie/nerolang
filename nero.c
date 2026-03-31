@@ -507,10 +507,11 @@ Value nero_copy(Value val) {
     return res;
 }
 
-#define EXPECT(N) if (argc != N) { ERROR("Expected %d argument(s), got %d\n", errpos(nr, PEEK(0)), N, argc); }
+static Token errtok;
+#define EXPECT(N) if (argc != N) { ERROR("Expected %d argument(s), got %d\n", errpos(nr, errtok), N, argc); }
 #define EXPECT_TYPE(A, T) if (A.type != T) {\
     String _exp = type_to_string(T), _got = type_to_string(A.type); \
-    ERROR("Expected %.*s, got %.*s\n", errpos(nr, PEEK(0)), _exp.sz, _exp.ptr, _got.sz, _got.ptr); }
+    ERROR("Expected %.*s, got %.*s\n", errpos(nr, errtok), _exp.sz, _exp.ptr, _got.sz, _got.ptr); }
 
 static inline String type_to_string(uint8_t type) {
     String str = STRALLOC();
@@ -554,7 +555,7 @@ Value nero_number(Nero *nr, int argc, Value *argv) {
     int s = argv[0].as_str->sz > 1 && strchr("+-", argv[0].as_str->ptr[0])? 1 : 0;
     for (int i = s; i < argv[0].as_str->sz; ++i) {
         if (!(isdigit(str[i]) || str[i] == '.') || (str[i] == '.' && found_dot))
-            ERROR("Invalid number '%s'\n", errpos(nr, PEEK(0)), str);
+            ERROR("Invalid number '%s'\n", errpos(nr, errtok), str);
         if (str[i] == '.') found_dot = 1;
     }
     if (found_dot) return (Value) {T_REAL, .as_real = strtod(str, NULL)};
@@ -623,7 +624,7 @@ Value nero_pop(Nero *nr, int argc, Value *argv) {
     LIST_POPP(list);
     return argv[0];
 fail:
-    ERROR("List index out of range\n", errpos(nr, PEEK(0)));
+    ERROR("List index out of range\n", errpos(nr, errtok));
     return (Value){T_NIL}; // dum dum compiler
 }
 
@@ -645,7 +646,7 @@ Value nero_chr(Nero *nr, int argc, Value *argv) {
 Value nero_ord(Nero *nr, int argc, Value *argv) {
     EXPECT(1);
     EXPECT_TYPE(argv[0], T_STR);
-    if (argv[0].as_str->sz != 1) ERROR("Expected str of size 1\n", errpos(nr, PEEK(0)));
+    if (argv[0].as_str->sz != 1) ERROR("Expected str of size 1\n", errpos(nr, errtok));
     return (Value){T_INT, .as_int = argv[0].as_str->ptr[0]};
 }
 
@@ -663,7 +664,7 @@ Value nero_write_file(Nero *nr, int argc, Value *argv) {
     char file[argv[0].as_str->sz];
     sprintf(file, "%.*s", argv[0].as_str->sz, argv[0].as_str->ptr);
     FILE *fp = fopen(file, "w+");
-    if (!fp) ERROR("Could not write file '%s'\n", errpos(nr, PEEK(0)), file);
+    if (!fp) ERROR("Could not write file '%s'\n", errpos(nr, errtok), file);
     Value str = nero_string(argv[1], 0);
     fwrite(str.as_str->ptr, sizeof(char), str.as_str->sz, fp);
     fclose(fp);
@@ -678,12 +679,12 @@ Value nero_read_file(Nero *nr, int argc, Value *argv) {
     FILE *fp = fopen(file, "r");
     int sz = 0;
     String text;
-    if (!fp) ERROR("Could not read file '%s'\n", errpos(nr, PEEK(0)), file);
+    if (!fp) ERROR("Could not read file '%s'\n", errpos(nr, errtok), file);
     fseek(fp, 0, SEEK_END);
     if ((sz = ftell(fp))) text = STRALLOCN(sz);
     fseek(fp, 0, SEEK_SET);
     if (fread(text.ptr, sizeof(char), sz, fp) != sz)
-        ERROR("Failed to read file '%s'\n", errpos(nr, PEEK(0)), file);
+        ERROR("Failed to read file '%s'\n", errpos(nr, errtok), file);
     text.alloc = text.sz = sz;
     fclose(fp);
     return (Value){T_STR, .as_str = nero_string_copy(text)};
@@ -697,7 +698,7 @@ Value nero_range(Nero *nr, int argc, Value *argv) {
     int len = argv[0].type == T_STR? argv[0].as_str->sz : argv[0].as_list->sz;
     int64_t start = argv[1].as_int, end = argv[2].as_int;
     if (start < 0 || start >= len || end > len || len+end < 0)
-        ERROR("List index out of range\n", errpos(nr, PEEK(0)));
+        ERROR("List index out of range\n", errpos(nr, errtok));
     if (argv[0].type == T_STR) {
         String s = {.ptr = argv[0].as_str->ptr+start, .sz = (end <= 0? (len-start)+end : end-start+1)};
         Value res = {T_STR, .as_str = nero_string_copy(s)};
@@ -891,6 +892,7 @@ static Value exec_call_foreign(Nero *nr, Token tok, Value args) {
     for (int i = 0; i < nr->extn.sz; ++i) {
         if (STRCMPP(tok.value, nr->extn.ptr[i].name)) {
             Function *fn = nr->fn, cur_fn = (Function) { .name = tok.value };
+            errtok = tok;
             nr->fn = &cur_fn;
             res = nr->extn.ptr[i].func(nr, args.as_list->sz, args.as_list->ptr);
             nr->fn = fn;
