@@ -32,7 +32,7 @@
 
 typedef LIST(char) String;
 
-#define STRALLOC() (String) STRALLOCN(_NERO_STRING_ALLOC_SIZE)
+#define STRALLOC() STRALLOCN(_NERO_STRING_ALLOC_SIZE)
 #define STRALLOCN(N) (String) LIST_ALLOCN(char, N)
 #define STRCMPP_OP(a, b, op) ((a) op sz == strlen(b) && !strncmp((a) op ptr, b, (a) op sz))
 #define STRCMPS_OP(a, b, op) ((a) op sz == (b) op sz && !strncmp((a) op ptr, (b) op ptr, (a) op sz))
