@@ -28,38 +28,40 @@ def list_remove(list, val) {
     return l
 }
 
-def new_item(type, name) {
-    return { type = type, name = name }
-}
-
-def new_slot(item) {
-    return { item = item, amount = 1 }
+def is_number(str) {
+    if !str { return false }
+    for ch = str {
+        if !contains('0123456789', ch) {
+            return false
+        }
+    }
+    return true
 }
 
 def new_inventory() {
     return { slots = [] }
 }
 
-def inventory_add(inv, item) {
+def inventory_add(inv, item, amnt) {
     slot = list_find(inv.slots, def(s) { s.item == item })
     if slot != nil {
-        slot.amount = slot.amount + 1
+        slot.amount = slot.amount + amnt
     } else {
-        push(inv.slots, new_slot(item))
+        push(inv.slots, { item = item, amount = amnt })
     }
 }
 
-def inventory_del(inv, item) {
+def inventory_del(inv, item, amnt) {
     slot = list_find(inv.slots, def(s) { s.item == item })
     if slot != nil {
-        if (slot.amount = slot.amount - 1) == 0 {
+        if (slot.amount = slot.amount - amnt) <= 0 {
             inv.slots = list_remove(inv.slots, slot)
         }
     }
 }
 
 inv = new_inventory()
-echo('epic inventory system')
+echo('epic inventory system (type `help` to see commands)')
 while true {
     text = read('> ')
     if text == nil { break }
@@ -67,14 +69,27 @@ while true {
     command = line[0]
     if command == 'help' || command == 'h' {
         echo('commands:')
-        echo('  (a)dd <item>')
-        echo('  (d)el <item>')
+        echo('  (a)dd [amount] <item>')
+        echo('  (d)el [amount] <item>')
         echo('  (l)ist')
         echo('  (h)elp')
+        echo('  (q)uit')
     } elif command == 'add' || command == 'a' {
-        inventory_add(inv, str_join(' ', range(line, 1, 0)))
+        if is_number(line[1]) {
+            num = number(line[1])
+            range_start = 2
+        } else {
+            range_start = num = 1
+        }
+        inventory_add(inv, str_join(' ', range(line, range_start, 0)), num)
     } elif command == 'del' || command == 'd' {
-        inventory_del(inv, str_join(' ', range(line, 1, 0)))
+        if is_number(line[1]) {
+            num = number(line[1])
+            range_start = 2
+        } else {
+            range_start = num = 1
+        }
+        inventory_del(inv, str_join(' ', range(line, range_start, 0)), num)
     } elif command == 'list' || command == 'l' {
         for slot = inv.slots {
             echo(slot.item, ' x', slot.amount)
